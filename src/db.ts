@@ -11,6 +11,7 @@ export interface EmailRecord {
   body: string;
   bodyHtml: string;
   tags: string[];
+  messageId?: string;
 }
 
 const DB_FILE_PATH = path.join(process.cwd(), 'emails_db.json');
@@ -43,14 +44,28 @@ export function getEmails(): EmailRecord[] {
 
 /**
  * Saves a single email record to the local JSON database.
- * Avoids duplicates by matching UID.
+ * Avoids duplicates by matching UID, Message-ID, or Subject + Date.
  */
 export function saveEmail(email: EmailRecord): void {
   try {
     const emails = getEmails();
+    
+    // Check duplicate by UID
     if (emails.some(e => e.uid === email.uid)) {
-      return; // Already exists
+      return;
     }
+
+    // Check duplicate by Message-ID
+    if (email.messageId && emails.some(e => e.messageId === email.messageId)) {
+      return;
+    }
+
+    // Check duplicate by Subject + Date
+    const incomingKey = `${email.subject?.trim()}|||${email.date}`;
+    if (emails.some(e => `${e.subject?.trim()}|||${e.date}` === incomingKey)) {
+      return;
+    }
+
     emails.unshift(email); // Put latest on top
     fs.writeFileSync(DB_FILE_PATH, JSON.stringify(emails, null, 2), 'utf-8');
   } catch (err) {
@@ -60,13 +75,34 @@ export function saveEmail(email: EmailRecord): void {
 
 /**
  * Saves multiple email records to the local JSON database.
- * Avoids duplicates by matching UID.
+ * Avoids duplicates by matching UID, Message-ID, or Subject + Date.
  */
 export function saveEmails(newEmails: EmailRecord[]): void {
   try {
     const emails = getEmails();
     const existingUids = new Set(emails.map(e => e.uid));
-    const filtered = newEmails.filter(e => !existingUids.has(e.uid));
+    const existingMessageIds = new Set(emails.map(e => e.messageId).filter(Boolean) as string[]);
+    const existingSubjectDates = new Set(emails.map(e => `${e.subject?.trim()}|||${e.date}`));
+
+    const filtered = newEmails.filter(e => {
+      // 1. Check UID
+      if (existingUids.has(e.uid)) {
+        return false;
+      }
+      
+      // 2. Check Message-ID
+      if (e.messageId && existingMessageIds.has(e.messageId)) {
+        return false;
+      }
+
+      // 3. Check Subject + Date
+      const key = `${e.subject?.trim()}|||${e.date}`;
+      if (existingSubjectDates.has(key)) {
+        return false;
+      }
+
+      return true;
+    });
     
     if (filtered.length > 0) {
       const updated = [...filtered, ...emails];

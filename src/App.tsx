@@ -34,6 +34,7 @@ interface Email {
   body: string;
   bodyHtml: string;
   tags: string[];
+  messageId?: string;
 }
 
 export default function App() {
