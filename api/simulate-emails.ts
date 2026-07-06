@@ -1,4 +1,5 @@
 import { getAutoTags } from '../src/tags';
+import { saveEmails } from '../src/db';
 
 export default async function handler(req: any, res: any) {
   try {
@@ -65,6 +66,9 @@ export default async function handler(req: any, res: any) {
         });
       }
     }
+
+    // Save to server-side JSON database
+    saveEmails(fetchedEmails);
 
     return res.status(200).json({
       success: true,

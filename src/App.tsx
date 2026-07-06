@@ -73,28 +73,20 @@ export default function App() {
   // Pane 3 Email Body Toggle (Plain vs HTML)
   const [bodyViewMode, setBodyViewMode] = useState<'text' | 'html'>('text');
 
-  // Trigger loading initial emails from local storage or fallback to seed data
-  const loadEmails = () => {
+  // Trigger loading initial emails from local SQLite/JSON server database
+  const loadEmails = async () => {
     try {
-      const stored = localStorage.getItem('emails_db');
-      if (stored) {
-        const parsed = JSON.parse(stored) as Email[];
-        setEmails(parsed);
+      const res = await fetch('/api/emails');
+      const data = await res.json();
+      if (data.success && data.emails) {
+        setEmails(data.emails);
         // Automatically select the first email if none is selected
-        if (parsed.length > 0 && !selectedEmail) {
-          setSelectedEmail(parsed[0]);
-        }
-      } else {
-        // Fallback to seed emails
-        const seed = getSeedEmails();
-        localStorage.setItem('emails_db', JSON.stringify(seed));
-        setEmails(seed);
-        if (seed.length > 0 && !selectedEmail) {
-          setSelectedEmail(seed[0]);
+        if (data.emails.length > 0 && !selectedEmail) {
+          setSelectedEmail(data.emails[0]);
         }
       }
     } catch (err) {
-      console.error('Failed to load emails from localStorage:', err);
+      console.error('Failed to load emails from local database API:', err);
     }
   };
 
@@ -145,25 +137,16 @@ export default function App() {
     setIsFetching(true);
     setFetchResult(null);
     try {
-      const existingUids = emails.map(e => e.uid);
       const res = await fetch('/api/fetch-emails', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port, username, password, limit: 30, existingUids })
+        body: JSON.stringify({ host, port, username, password, limit: 30 })
       });
       const data = await res.json();
       setFetchResult({ success: data.success, message: data.message, count: data.fetchedCount || 0 });
       
-      const newEmails = data.emails || [];
-      if (data.success && newEmails.length > 0) {
-        // filter out any duplicates just in case
-        const filteredNew = newEmails.filter((newEmail: Email) => !existingUids.includes(newEmail.uid));
-        if (filteredNew.length > 0) {
-          const updatedEmails = [...filteredNew, ...emails];
-          localStorage.setItem('emails_db', JSON.stringify(updatedEmails));
-          setEmails(updatedEmails);
-          setSelectedEmail(updatedEmails[0]);
-        }
+      if (data.success) {
+        await loadEmails();
       }
     } catch (err: any) {
       setFetchResult({ success: false, message: `Server error during fetch: ${err.message || String(err)}`, count: 0 });
@@ -187,16 +170,8 @@ export default function App() {
         count: data.fetchedCount || 0
       });
       
-      const simulated = data.emails || [];
-      if (data.success && simulated.length > 0) {
-        const existingUids = emails.map(e => e.uid);
-        const filteredNew = simulated.filter((simEmail: Email) => !existingUids.includes(simEmail.uid));
-        if (filteredNew.length > 0) {
-          const updatedEmails = [...filteredNew, ...emails];
-          localStorage.setItem('emails_db', JSON.stringify(updatedEmails));
-          setEmails(updatedEmails);
-          setSelectedEmail(updatedEmails[0]);
-        }
+      if (data.success) {
+        await loadEmails();
       }
     } catch (err: any) {
       setFetchResult({
@@ -210,12 +185,19 @@ export default function App() {
   };
 
   // Clear Local Database Cache
-  const handleClearDatabase = () => {
+  const handleClearDatabase = async () => {
     if (confirm('Are you sure you want to clear all cached emails from your local database? This cannot be undone.')) {
-      localStorage.removeItem('emails_db');
-      setEmails([]);
-      setSelectedEmail(null);
-      alert('Local database cache cleared successfully.');
+      try {
+        const res = await fetch('/api/clear-emails', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          setEmails([]);
+          setSelectedEmail(null);
+          alert('Local database cache cleared successfully.');
+        }
+      } catch (err) {
+        alert('Failed to clear database cache on server.');
+      }
     }
   };
 

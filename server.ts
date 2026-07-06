@@ -4,6 +4,8 @@ import { createServer as createViteServer } from "vite";
 import testConnectionHandler from "./api/test-connection";
 import fetchEmailsHandler from "./api/fetch-emails";
 import simulateEmailsHandler from "./api/simulate-emails";
+import emailsHandler from "./api/emails";
+import clearEmailsHandler from "./api/clear-emails";
 
 async function startServer() {
   const app = express();
@@ -12,20 +14,26 @@ async function startServer() {
   // Enable JSON request parsing
   app.use(express.json({ limit: '10mb' }));
 
-  // --- API ROUTES (Delegated to Vercel Serverless Function Handlers) ---
+  // --- API ROUTES ---
   
   // Health check
   app.get("/api/health", (req, res) => {
-    res.json({ status: "ok", time: new Date().toISOString(), serverlessReady: true });
+    res.json({ status: "ok", time: new Date().toISOString(), localMode: true });
   });
+
+  // Get saved emails from local file database
+  app.get("/api/emails", emailsHandler);
+
+  // Clear emails database cache
+  app.post("/api/clear-emails", clearEmailsHandler);
 
   // POP3 Test Connection
   app.post("/api/test-connection", testConnectionHandler);
 
-  // POP3 Fetch Emails (Stateless)
+  // POP3 Fetch Emails
   app.post("/api/fetch-emails", fetchEmailsHandler);
 
-  // POP3 Simulate Emails (Stateless)
+  // POP3 Simulate Emails
   app.post("/api/simulate-emails", simulateEmailsHandler);
 
   // --- VITE DEV OR PRODUCTION STATIC SERVING ---
@@ -47,7 +55,7 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Email Ticketing System Server (Serverless-Proxy Mode) running on http://localhost:${PORT}`);
+    console.log(`Email Ticketing System Server (Local DB Mode) running on http://localhost:${PORT}`);
   });
 }
 

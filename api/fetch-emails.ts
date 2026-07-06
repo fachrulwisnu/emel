@@ -1,25 +1,27 @@
 import PostalMime from 'postal-mime';
 import { Pop3Client, parsePop3Message } from '../src/pop3';
 import { getAutoTags } from '../src/tags';
+import { getEmailUids, saveEmails } from '../src/db';
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
     return res.status(405).json({ success: false, message: 'Method not allowed. Use POST.' });
   }
 
-  const { host, port, username, password, limit = 30, existingUids = [] } = req.body;
+  const { host, port, username, password, limit = 30 } = req.body;
 
   if (!host || !port || !username) {
     return res.status(400).json({ success: false, message: 'Missing connection details.' });
   }
 
   const client = new Pop3Client();
+  const existingUids = getEmailUids();
   const existingSet = new Set<string>(existingUids);
 
-  console.log(`\n--- [STATELESS POP3 SYNC EMAILS START] ---`);
+  console.log(`\n--- [LOCAL POP3 SYNC EMAILS START] ---`);
   console.log(`Target POP3 Server : ${host}:${port}`);
   console.log(`Username           : "${username}"`);
-  console.log(`Existing cache size: ${existingSet.size}`);
+  console.log(`Local DB size      : ${existingSet.size}`);
 
   try {
     const portNum = parseInt(port, 10);
@@ -62,7 +64,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // Filter out emails that the client already has cached in localStorage
+    // Filter out emails that are already in our database
     const newUids = serverUids.filter(item => !existingSet.has(item.uid));
     
     // Sort latest first
@@ -109,6 +111,11 @@ export default async function handler(req: any, res: any) {
     }
 
     await client.sendCommand('QUIT');
+
+    // Save fetched emails to local database
+    if (fetchedEmails.length > 0) {
+      saveEmails(fetchedEmails);
+    }
 
     return res.status(200).json({
       success: true,
