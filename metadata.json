@@ -1,0 +1,6 @@
+{
+  "name": "Email Ticketing System",
+  "description": "A modern 3-pane email ticketing application that fetches and parses emails via POP3 and organizes them locally inside an SQLite database.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
