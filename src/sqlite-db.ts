@@ -15,9 +15,43 @@ export interface DbEmail {
   body_text: string;
   html_body: string;
   tags: string; // stored as JSON string
+  category?: string;
+  sub_category?: string;
 }
 
 let dbInstance: sqlite3.Database | null = null;
+
+export function classifyEmail(subject: string): { category: string; subCategory: string } {
+  const subjUpper = (subject || '').toUpperCase();
+  
+  if (subjUpper.includes('SPEEDTEST RUTIN')) {
+    // Extract everything after SPEEDTEST RUTIN
+    const match = subject.match(/SPEEDTEST RUTIN\s+(.*)/i);
+    const sub = match ? match[1].trim() : 'General';
+    return {
+      category: 'Speedtest Routine',
+      subCategory: sub || 'General'
+    };
+  }
+  
+  if (subjUpper.includes('TUGAS SHIFT MALAM')) {
+    // Extract period/date or everything after "Tugas Shift Malam"
+    const match = subject.match(/Tugas Shift Malam\s*[-–:]?\s*(.*)/i);
+    const sub = match ? match[1].trim() : 'General';
+    return {
+      category: 'Tugas Shift Malam',
+      subCategory: sub || 'General'
+    };
+  }
+  
+  // Default fallback
+  const cleanSubj = subject || '';
+  const sub = cleanSubj.length > 30 ? cleanSubj.substring(0, 30) + '...' : cleanSubj;
+  return {
+    category: 'Uncategorized',
+    subCategory: sub || '(No Subject)'
+  };
+}
 
 export function getDbConnection(): Promise<sqlite3.Database> {
   return new Promise((resolve, reject) => {
@@ -54,12 +88,31 @@ export async function initDb(): Promise<void> {
           date TEXT,
           body_text TEXT,
           html_body TEXT,
-          tags TEXT
+          tags TEXT,
+          category TEXT,
+          sub_category TEXT
         )
       `, (err) => {
         if (err) {
           console.error('Error creating table:', err);
           return reject(err);
+        }
+      });
+
+      // Migration: Ensure category and sub_category columns exist in case table existed earlier
+      db.run('ALTER TABLE emails ADD COLUMN category TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN sub_category TEXT', () => {});
+
+      // Migration: Backfill categories for existing entries
+      db.all('SELECT id, subject FROM emails WHERE category IS NULL OR category = ""', (err, rows: any[]) => {
+        if (!err && rows && rows.length > 0) {
+          console.log(`[SQLite DB] Migrating ${rows.length} existing emails to new categories...`);
+          const stmt = db.prepare('UPDATE emails SET category = ?, sub_category = ? WHERE id = ?');
+          for (const row of rows) {
+            const { category, subCategory } = classifyEmail(row.subject || '');
+            stmt.run(category, subCategory, row.id);
+          }
+          stmt.finalize();
         }
       });
 
@@ -74,14 +127,15 @@ export async function initDb(): Promise<void> {
           console.log('[SQLite DB] Database is empty. Seeding initial data...');
           const seedEmails = getSeedEmails();
           const stmt = db.prepare(`
-            INSERT OR IGNORE INTO emails (message_id, subject, sender, receiver, date, body_text, html_body, tags)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO emails (message_id, subject, sender, receiver, date, body_text, html_body, tags, category, sub_category)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `);
 
           for (const email of seedEmails) {
             const senderStr = email.fromName ? `${email.fromName} <${email.fromAddress}>` : email.fromAddress;
             const receiverStr = 'fachrul.wisnu@advantagescm.com'; // default mock receiver
             const tagsJson = JSON.stringify(email.tags || []);
+            const { category, subCategory } = classifyEmail(email.subject || '');
             stmt.run(
               email.uid,
               email.subject,
@@ -90,7 +144,9 @@ export async function initDb(): Promise<void> {
               email.date,
               email.body,
               email.bodyHtml,
-              tagsJson
+              tagsJson,
+              category,
+              subCategory
             );
           }
           stmt.finalize((finalizeErr) => {
@@ -140,6 +196,10 @@ export async function getAllEmails(): Promise<any[]> {
           }
         }
 
+        const { category, subCategory } = classifyEmail(row.subject || '');
+        const emailCategory = row.category || category;
+        const emailSubCategory = row.sub_category || subCategory;
+
         return {
           id: row.id,
           uid: row.message_id,
@@ -150,7 +210,9 @@ export async function getAllEmails(): Promise<any[]> {
           date: row.date,
           body: row.body_text,
           bodyHtml: row.html_body,
-          tags: parsedTags
+          tags: parsedTags,
+          category: emailCategory,
+          subCategory: emailSubCategory
         };
       });
 
@@ -172,13 +234,25 @@ export async function upsertEmail(email: {
   body_text: string;
   html_body: string;
   tags: string[];
+  category?: string;
+  sub_category?: string;
 }): Promise<void> {
   const db = await getDbConnection();
+  
+  // Classify dynamically if not provided
+  let emailCategory = email.category;
+  let emailSubCategory = email.sub_category;
+  if (!emailCategory || !emailSubCategory) {
+    const classification = classifyEmail(email.subject);
+    if (!emailCategory) emailCategory = classification.category;
+    if (!emailSubCategory) emailSubCategory = classification.subCategory;
+  }
+
   return new Promise((resolve, reject) => {
     db.run(
       `
-      INSERT INTO emails (message_id, subject, sender, receiver, date, body_text, html_body, tags)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO emails (message_id, subject, sender, receiver, date, body_text, html_body, tags, category, sub_category)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(message_id) DO UPDATE SET
         subject = excluded.subject,
         sender = excluded.sender,
@@ -186,7 +260,9 @@ export async function upsertEmail(email: {
         date = excluded.date,
         body_text = excluded.body_text,
         html_body = excluded.html_body,
-        tags = excluded.tags
+        tags = excluded.tags,
+        category = excluded.category,
+        sub_category = excluded.sub_category
       `,
       [
         email.message_id,
@@ -196,13 +272,36 @@ export async function upsertEmail(email: {
         email.date,
         email.body_text,
         email.html_body,
-        JSON.stringify(email.tags || [])
+        JSON.stringify(email.tags || []),
+        emailCategory,
+        emailSubCategory
       ],
       (err) => {
         if (err) {
           return reject(err);
         }
         resolve();
+      }
+    );
+  });
+}
+
+/**
+ * Aggregates all categories and sub-categories with counts.
+ */
+export async function getDynamicFolders(): Promise<{ category: string; subCategory: string; count: number }[]> {
+  const db = await getDbConnection();
+  return new Promise((resolve, reject) => {
+    db.all(
+      `SELECT category, sub_category as subCategory, COUNT(*) as count 
+       FROM emails 
+       GROUP BY category, sub_category 
+       ORDER BY category ASC, sub_category ASC`,
+      (err, rows: any[]) => {
+        if (err) {
+          return reject(err);
+        }
+        resolve(rows || []);
       }
     );
   });

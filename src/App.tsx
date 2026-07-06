@@ -37,6 +37,8 @@ interface Email {
   bodyHtml: string;
   tags: string[];
   messageId?: string;
+  category?: string;
+  subCategory?: string;
 }
 
 export default function App() {
@@ -50,6 +52,11 @@ export default function App() {
   // Local MBOX Configuration State (defaults pre-filled)
   const [mboxPath, setMboxPath] = useState('C:\\Users\\HP\\AppData\\Roaming\\Thunderbird\\Profiles\\xr2b9r9p.default-release\\Mail\\mail.advantagescm.com\\Inbox');
   const [isImportingMbox, setIsImportingMbox] = useState(false);
+  
+  // Local EML Configuration State (defaults pre-filled)
+  const [emlDirPath, setEmlDirPath] = useState('Documents\\test mbox');
+  const [isImportingEml, setIsImportingEml] = useState(false);
+  
   const [mboxProgress, setMboxProgress] = useState<number>(0);
   const [mboxLogs, setMboxLogs] = useState<string[]>([]);
   const [mboxStatus, setMboxStatus] = useState<'idle' | 'processing' | 'complete' | 'stopped' | 'error'>('idle');
@@ -67,7 +74,12 @@ export default function App() {
   // Email List and Selected Email States
   const [emails, setEmails] = useState<Email[]>([]);
   const [selectedEmail, setSelectedEmail] = useState<Email | null>(null);
-  const [selectedFolder, setSelectedFolder] = useState<string>('all'); // 'all', 'untagged', 'speedtest:<branch>', 'approval:<docType>'
+  const [selectedFolder, setSelectedFolder] = useState<string>('all'); // 'all', 'untagged', 'category:Name', 'subcategory:CatName||SubCatName'
+  
+  // Dynamic Folder Mapping State
+  const [dynamicFolders, setDynamicFolders] = useState<{ category: string; subCategory: string; count: number }[]>([]);
+  const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({});
+  
   const [isSpeedtestExpanded, setIsSpeedtestExpanded] = useState(true);
   const [isApprovalExpanded, setIsApprovalExpanded] = useState(true);
   
@@ -84,6 +96,27 @@ export default function App() {
   // Pane 3 Email Body Toggle (Plain vs HTML)
   const [bodyViewMode, setBodyViewMode] = useState<'text' | 'html'>('text');
 
+  const loadFolders = async () => {
+    try {
+      const res = await fetch('/api/folders');
+      const data = await res.json();
+      if (data.success && data.folders) {
+        setDynamicFolders(data.folders);
+        setExpandedCategories(prev => {
+          const next = { ...prev };
+          data.folders.forEach((f: any) => {
+            if (next[f.category] === undefined) {
+              next[f.category] = true; // expanded by default
+            }
+          });
+          return next;
+        });
+      }
+    } catch (err) {
+      console.error('Failed to load dynamic folders:', err);
+    }
+  };
+
   // Trigger loading initial emails from local SQLite/JSON server database
   const loadEmails = async () => {
     try {
@@ -96,6 +129,7 @@ export default function App() {
           setSelectedEmail(data.emails[0]);
         }
       }
+      await loadFolders();
     } catch (err) {
       console.error('Failed to load emails from local database API:', err);
     }
@@ -265,6 +299,99 @@ export default function App() {
     }
   };
 
+  // Local EML Batch Import Handler (SSE Stream)
+  const handleImportEmlDir = async () => {
+    if (!emlDirPath.trim()) {
+      alert('Please specify a valid EML folder directory path.');
+      return;
+    }
+    
+    setIsImportingMbox(true); // locks other buttons
+    setIsImportingEml(true);
+    setMboxStatus('processing');
+    setMboxProgress(0);
+    setMboxLogs(['[START] Connecting to EML folder import stream...']);
+    setMboxParsedCount(0);
+    setFetchResult(null);
+
+    let currentParsedCount = 0;
+
+    try {
+      const url = `/api/import-eml-dir?path=${encodeURIComponent(emlDirPath)}`;
+      const eventSource = new EventSource(url);
+
+      eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          
+          if (data.percentage !== undefined) {
+            setMboxProgress(data.percentage);
+          }
+          if (data.parsedCount !== undefined) {
+            currentParsedCount = data.parsedCount;
+            setMboxParsedCount(data.parsedCount);
+          }
+          if (data.log) {
+            setMboxLogs(prev => [...prev, data.log]);
+          }
+          
+          if (data.status === 'complete') {
+            setMboxStatus('complete');
+            setFetchResult({
+              success: true,
+              message: data.log || 'EML Batch import completed successfully!',
+              count: data.parsedCount || 0
+            });
+            eventSource.close();
+            setIsImportingMbox(false);
+            setIsImportingEml(false);
+            loadEmails();
+          } else if (data.status === 'error') {
+            setMboxStatus('error');
+            setFetchResult({
+              success: false,
+              message: data.log || 'EML Batch import failed.',
+              count: data.parsedCount || 0
+            });
+            eventSource.close();
+            setIsImportingMbox(false);
+            setIsImportingEml(false);
+            loadEmails();
+          }
+        } catch (e) {
+          console.warn('Failed parsing SSE message:', e);
+        }
+      };
+
+      eventSource.onerror = (err) => {
+        console.error('EML EventSource stream error:', err);
+        setMboxStatus('stopped');
+        setMboxLogs(prev => [...prev, '[ERROR] EventSource connection closed. Data up to this point is saved.']);
+        setFetchResult({
+          success: false,
+          message: 'EML import connection closed or error occurred.',
+          count: currentParsedCount
+        });
+        eventSource.close();
+        setIsImportingMbox(false);
+        setIsImportingEml(false);
+        loadEmails();
+      };
+
+    } catch (err: any) {
+      console.error('EML import stream error:', err);
+      setMboxStatus('stopped');
+      setMboxLogs(prev => [...prev, `[FATAL ERROR] Import stopped: ${err.message || String(err)}`]);
+      setFetchResult({
+        success: false,
+        message: `EML import stopped: ${err.message || String(err)}`,
+        count: currentParsedCount
+      });
+      setIsImportingMbox(false);
+      setIsImportingEml(false);
+    }
+  };
+
   // Simulate Emails Handler
   const handleSimulateEmails = async () => {
     setIsSimulating(true);
@@ -377,17 +504,15 @@ export default function App() {
       if (selectedFolder === 'all') {
         // Show everything
       } else if (selectedFolder === 'untagged') {
-        if (email.tags.includes('Speedtest') || email.tags.includes('Approval')) return false;
-      } else if (selectedFolder === 'speedtest:all') {
-        if (!email.tags.includes('Speedtest')) return false;
-      } else if (selectedFolder === 'approval:all') {
-        if (!email.tags.includes('Approval')) return false;
-      } else if (selectedFolder.startsWith('speedtest:')) {
-        const branch = selectedFolder.split(':')[1];
-        if (!email.tags.includes('Speedtest') || !email.tags.includes(branch)) return false;
-      } else if (selectedFolder.startsWith('approval:')) {
-        const docType = selectedFolder.split(':')[1];
-        if (!email.tags.includes('Approval') || !email.tags.includes(docType)) return false;
+        if (email.category && email.category !== 'Uncategorized') return false;
+      } else if (selectedFolder.startsWith('category:')) {
+        const cat = selectedFolder.substring('category:'.length);
+        if (email.category !== cat) return false;
+      } else if (selectedFolder.startsWith('subcategory:')) {
+        const parts = selectedFolder.substring('subcategory:'.length).split('||');
+        const cat = parts[0];
+        const sub = parts[1];
+        if (email.category !== cat || email.subCategory !== sub) return false;
       }
 
       // 2. Advanced search filters
@@ -627,8 +752,33 @@ export default function App() {
                     className="w-full flex items-center justify-center gap-1.5 py-1.5 px-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded text-[11px] font-bold transition-all shadow-sm cursor-pointer disabled:bg-indigo-400 disabled:cursor-not-allowed"
                     title="Import historical emails directly from local Thunderbird Inbox"
                   >
-                    {isImportingMbox ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Database className="h-3 w-3" />}
-                    <span>{isImportingMbox ? `Importing... (${mboxProgress}%)` : "Import Old History (Local MBOX)"}</span>
+                    {isImportingMbox && !isImportingEml ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Database className="h-3 w-3" />}
+                    <span>{isImportingMbox && !isImportingEml ? `Importing MBOX... (${mboxProgress}%)` : "Import Old History (Local MBOX)"}</span>
+                  </button>
+                </div>
+
+                {/* Local EML Folder Import Section */}
+                <div className="pt-2 border-t border-slate-200/50 mt-1.5 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-slate-500 font-semibold text-[10px]">Local .EML Folder Path</label>
+                    <span className="text-[9px] text-slate-400 font-mono">Batch .eml</span>
+                  </div>
+                  <input 
+                    type="text"
+                    value={emlDirPath}
+                    onChange={(e) => setEmlDirPath(e.target.value)}
+                    disabled={isImportingMbox}
+                    className="w-full px-2 py-1 bg-slate-50 border border-slate-200 rounded text-[10px] text-slate-700 font-mono focus:outline-none focus:border-blue-500 transition-colors disabled:bg-slate-50 disabled:text-slate-400"
+                    placeholder="e.g. Documents/test mbox"
+                  />
+                  <button
+                    onClick={handleImportEmlDir}
+                    disabled={isImportingMbox || isFetching}
+                    className="w-full flex items-center justify-center gap-1.5 py-1.5 px-2 bg-violet-600 hover:bg-violet-700 text-white rounded text-[11px] font-bold transition-all shadow-sm cursor-pointer disabled:bg-violet-400 disabled:cursor-not-allowed"
+                    title="Import EML files from a local directory"
+                  >
+                    {isImportingEml ? <RefreshCw className="h-3 w-3 animate-spin" /> : <FolderUp className="h-3.5 w-3.5" />}
+                    <span>{isImportingEml ? `Importing EML... (${mboxProgress}%)` : "Import Folder (Batch .EML)"}</span>
                   </button>
 
                   {/* Real-time SSE Progress bar & Log output */}
@@ -717,171 +867,122 @@ export default function App() {
               )}
             </div>
           )}
-
-          {/* VIRTUAL FOLDERS / TREE VIEW */}
-          <div className="p-4 flex-1">
-            <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-3 px-2">System Views</p>
+          <div className="p-4 flex-1 overflow-y-auto">
+            <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-3 px-2">Dynamic Folders</p>
             
-            <nav className="space-y-1 text-sm" id="folders_tree">
+            <nav className="space-y-2 text-sm" id="folders_tree">
               
               {/* All Folder */}
               <button 
                 onClick={() => setSelectedFolder('all')}
                 className={`w-full flex items-center justify-between px-3 py-2 rounded-md transition-all cursor-pointer ${
                   selectedFolder === 'all' 
-                    ? 'bg-blue-50 text-blue-700 font-semibold' 
+                    ? 'bg-indigo-50 text-indigo-700 font-semibold' 
                     : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
                 }`}
               >
                 <div className="flex items-center space-x-2.5">
-                  <Inbox className={`h-4 w-4 ${selectedFolder === 'all' ? 'text-blue-600' : 'text-slate-400'}`} />
+                  <Inbox className={`h-4 w-4 ${selectedFolder === 'all' ? 'text-indigo-600' : 'text-slate-400'}`} />
                   <span>All Tickets</span>
                 </div>
                 <span className={`text-xs px-1.5 py-0.5 rounded ${
-                  selectedFolder === 'all' ? 'bg-blue-100 text-blue-700 font-semibold' : 'bg-slate-100 text-slate-505 font-medium'
+                  selectedFolder === 'all' ? 'bg-indigo-100 text-indigo-700 font-semibold' : 'bg-slate-100 text-slate-500 font-medium'
                 }`}>
-                  {folderCounts['all'] || 0}
+                  {emails.length}
                 </span>
               </button>
 
-              {/* Speedtest Virtual Sub-Tree */}
-              <div className="space-y-0.5">
-                <button 
-                  onClick={() => setSelectedFolder('speedtest:all')}
-                  className={`w-full flex items-center justify-between px-3 py-2 rounded-md transition-all cursor-pointer ${
-                    selectedFolder === 'speedtest:all' 
-                      ? 'bg-blue-50 text-blue-700 font-semibold' 
-                      : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
-                  }`}
-                >
-                  <div className="flex items-center space-x-1">
-                    <span 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setIsSpeedtestExpanded(!isSpeedtestExpanded);
-                      }}
-                      className="p-1 hover:bg-slate-200/50 rounded cursor-pointer transition-colors"
+              {/* Dynamic Categories & Sub-Categories */}
+              {Object.keys(
+                dynamicFolders.reduce<Record<string, { subCategory: string; count: number }[]>>((acc, item) => {
+                  if (!acc[item.category]) {
+                    acc[item.category] = [];
+                  }
+                  acc[item.category].push({ subCategory: item.subCategory, count: item.count });
+                  return acc;
+                }, {})
+              ).map(category => {
+                const subFolders = dynamicFolders.filter(f => f.category === category);
+                const categoryTotal = subFolders.reduce((sum, f) => sum + f.count, 0);
+                const isExpanded = expandedCategories[category] !== false; // expanded by default
+                
+                return (
+                  <div key={category} className="space-y-0.5 border-b border-slate-100 pb-1.5 last:border-none">
+                    <div 
+                      onClick={() => setSelectedFolder(`category:${category}`)}
+                      className={`w-full flex items-center justify-between px-3 py-2 rounded-md transition-all cursor-pointer group ${
+                        selectedFolder === `category:${category}` 
+                          ? 'bg-indigo-50 text-indigo-700 font-semibold' 
+                          : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                      }`}
                     >
-                      {isSpeedtestExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-                    </span>
-                    <Folder className={`h-4 w-4 ${selectedFolder === 'speedtest:all' ? 'text-blue-600' : 'text-blue-500'}`} />
-                    <span>Speedtest Routine</span>
-                  </div>
-                  <span className={`text-xs px-1.5 py-0.5 rounded ${
-                    selectedFolder === 'speedtest:all' ? 'bg-blue-100 text-blue-700 font-semibold' : 'bg-slate-100 text-slate-505 font-medium'
-                  }`}>
-                    {folderCounts['speedtest:all'] || 0}
-                  </span>
-                </button>
+                      <div className="flex items-center space-x-1 min-w-0">
+                        <span 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setExpandedCategories(prev => ({ ...prev, [category]: !isExpanded }));
+                          }}
+                          className="p-1 hover:bg-slate-200/50 rounded cursor-pointer transition-colors shrink-0"
+                          title={isExpanded ? "Collapse" : "Expand"}
+                        >
+                          {isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                        </span>
+                        <Folder className={`h-4 w-4 shrink-0 ${
+                          selectedFolder === `category:${category}` ? 'text-indigo-600' : 
+                          category === 'Speedtest Routine' ? 'text-blue-500' :
+                          category === 'Tugas Shift Malam' ? 'text-amber-500' : 'text-slate-400'
+                        }`} />
+                        <span className="truncate">{category}</span>
+                      </div>
+                      <span className={`text-xs px-1.5 py-0.5 rounded shrink-0 ${
+                        selectedFolder === `category:${category}` ? 'bg-indigo-100 text-indigo-700 font-semibold' : 'bg-slate-100 text-slate-500 font-medium'
+                      }`}>
+                        {categoryTotal}
+                      </span>
+                    </div>
 
-                {/* Speedtest branch subfolders */}
-                {isSpeedtestExpanded && (
-                  <div className="pl-6 space-y-1 border-l border-slate-100 ml-5">
-                    {speedtestBranches.map(branch => (
-                      <button
-                        key={branch}
-                        onClick={() => setSelectedFolder(`speedtest:${branch}`)}
-                        className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded text-xs transition-all cursor-pointer ${
-                          selectedFolder === `speedtest:${branch}`
-                            ? 'bg-slate-100 text-blue-700 font-bold'
-                            : 'text-slate-500 hover:bg-slate-50/80 hover:text-slate-800'
-                        }`}
-                      >
-                        <span className="flex items-center space-x-2 truncate">
-                          <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0"></span>
-                          <span className="truncate">{branch}</span>
-                        </span>
-                        <span className="text-[10px] text-slate-400 font-mono font-medium">
-                          {folderCounts[`speedtest:${branch}`] || 0}
-                        </span>
-                      </button>
-                    ))}
-                    {speedtestBranches.length === 0 && (
-                      <p className="text-[11px] text-slate-400 italic pl-3 py-1">No branches parsed yet</p>
+                    {/* Subcategories (Dynamic Children) */}
+                    {isExpanded && (
+                      <div className="pl-6 space-y-1 border-l border-slate-100 ml-5 mt-0.5">
+                        {subFolders.map(sub => {
+                          const subFolderKey = `subcategory:${category}||${sub.subCategory}`;
+                          const isSubSelected = selectedFolder === subFolderKey;
+                          
+                          return (
+                            <button
+                              key={sub.subCategory}
+                              onClick={() => setSelectedFolder(subFolderKey)}
+                              className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded text-xs transition-all cursor-pointer ${
+                                isSubSelected
+                                  ? 'bg-slate-100 text-indigo-700 font-bold'
+                                  : 'text-slate-500 hover:bg-slate-50/80 hover:text-slate-800'
+                              }`}
+                            >
+                              <span className="flex items-center space-x-2 truncate">
+                                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                  category === 'Speedtest Routine' ? 'bg-blue-400' :
+                                  category === 'Tugas Shift Malam' ? 'bg-amber-400' : 'bg-slate-300'
+                                }`}></span>
+                                <span className="truncate" title={sub.subCategory}>{sub.subCategory}</span>
+                              </span>
+                              <span className="text-[10px] text-slate-400 font-mono font-medium ml-1 shrink-0">
+                                {sub.count}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
                     )}
                   </div>
-                )}
-              </div>
+                );
+              })}
 
-              {/* Approval Virtual Sub-Tree */}
-              <div className="space-y-0.5">
-                <button 
-                  onClick={() => setSelectedFolder('approval:all')}
-                  className={`w-full flex items-center justify-between px-3 py-2 rounded-md transition-all cursor-pointer ${
-                    selectedFolder === 'approval:all' 
-                      ? 'bg-blue-50 text-blue-700 font-semibold' 
-                      : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
-                  }`}
-                >
-                  <div className="flex items-center space-x-1">
-                    <span 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setIsApprovalExpanded(!isApprovalExpanded);
-                      }}
-                      className="p-1 hover:bg-slate-200/50 rounded cursor-pointer transition-colors"
-                    >
-                      {isApprovalExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-                    </span>
-                    <Folder className={`h-4 w-4 ${selectedFolder === 'approval:all' ? 'text-blue-600' : 'text-emerald-500'}`} />
-                    <span>Approval Document</span>
-                  </div>
-                  <span className={`text-xs px-1.5 py-0.5 rounded ${
-                    selectedFolder === 'approval:all' ? 'bg-blue-100 text-blue-700 font-semibold' : 'bg-slate-100 text-slate-505 font-medium'
-                  }`}>
-                    {folderCounts['approval:all'] || 0}
-                  </span>
-                </button>
-
-                {/* Approval document-type subfolders */}
-                {isApprovalExpanded && (
-                  <div className="pl-6 space-y-1 border-l border-slate-100 ml-5">
-                    {['UAT', 'FSD', 'SIT', 'Other'].map(type => (
-                      <button
-                        key={type}
-                        onClick={() => setSelectedFolder(`approval:${type}`)}
-                        className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded text-xs transition-all cursor-pointer ${
-                          selectedFolder === `approval:${type}`
-                            ? 'bg-slate-100 text-blue-700 font-bold'
-                            : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800'
-                        }`}
-                      >
-                        <span className="flex items-center space-x-2 truncate">
-                          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                            type === 'UAT' ? 'bg-purple-400' :
-                            type === 'FSD' ? 'bg-amber-400' :
-                            type === 'SIT' ? 'bg-teal-400' : 'bg-slate-400'
-                          }`}></span>
-                          <span>{type} Request</span>
-                        </span>
-                        <span className="text-[10px] text-slate-400 font-mono font-medium">
-                          {folderCounts[`approval:${type}`] || 0}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* General / Untagged Folder */}
-              <button 
-                onClick={() => setSelectedFolder('untagged')}
-                className={`w-full flex items-center justify-between px-3 py-2 rounded-md transition-all cursor-pointer ${
-                  selectedFolder === 'untagged' 
-                    ? 'bg-blue-50 text-blue-700 font-semibold' 
-                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
-                }`}
-              >
-                <div className="flex items-center space-x-2.5">
-                  <Folder className={`h-4 w-4 ${selectedFolder === 'untagged' ? 'text-blue-600' : 'text-slate-400'}`} />
-                  <span>Unassigned Mail</span>
+              {/* Unassigned / fallback when emails have no category or uncategorized */}
+              {dynamicFolders.length === 0 && (
+                <div className="p-3 text-center text-xs text-slate-400 italic">
+                  No folders generated yet. Please import emails to trigger folder auto-generation!
                 </div>
-                <span className={`text-xs px-1.5 py-0.5 rounded ${
-                  selectedFolder === 'untagged' ? 'bg-blue-100 text-blue-700 font-semibold' : 'bg-slate-100 text-slate-505 font-medium'
-                }`}>
-                  {folderCounts['untagged'] || 0}
-                </span>
-              </button>
+              )}
 
             </nav>
           </div>
