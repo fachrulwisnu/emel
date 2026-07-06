@@ -21,7 +21,9 @@ import {
   Trash2,
   Info,
   Clock,
-  ArrowRight
+  ArrowRight,
+  Database,
+  FolderUp
 } from 'lucide-react';
 
 interface Email {
@@ -44,6 +46,10 @@ export default function App() {
   const [pop3User, setPop3User] = useState('fachrul.wisnu@advantagescm.com');
   const [pop3Pass, setPop3Pass] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  
+  // Local MBOX Configuration State (defaults pre-filled)
+  const [mboxPath, setMboxPath] = useState('C:\\Users\\HP\\AppData\\Roaming\\Thunderbird\\Profiles\\xr2b9r9p.default-release\\Mail\\mail.advantagescm.com\\Inbox');
+  const [isImportingMbox, setIsImportingMbox] = useState(false);
   
   // Connection and Fetching States
   const [showSettings, setShowSettings] = useState(true);
@@ -169,6 +175,37 @@ export default function App() {
       });
     } finally {
       setIsFetching(false);
+    }
+  };
+
+  // Import Local MBOX Handler
+  const handleImportMbox = async () => {
+    setIsImportingMbox(true);
+    setFetchResult(null);
+    try {
+      const res = await fetch('/api/import-mbox', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customPath: mboxPath })
+      });
+      const data = await res.json();
+      setFetchResult({
+        success: data.success,
+        message: data.message,
+        count: data.count || 0
+      });
+      
+      if (data.success) {
+        await loadEmails();
+      }
+    } catch (err: any) {
+      setFetchResult({
+        success: false,
+        message: `MBOX import error: ${err.message || String(err)}`,
+        count: 0
+      });
+    } finally {
+      setIsImportingMbox(false);
     }
   };
 
@@ -511,6 +548,30 @@ export default function App() {
                   >
                     {isSimulating ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Mail className="h-3 w-3" />}
                     <span>Simulate Local Inbound</span>
+                  </button>
+                </div>
+
+                {/* Local MBOX Import Section */}
+                <div className="pt-2 border-t border-slate-200/50 mt-1.5 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-slate-500 font-semibold text-[10px]">Local MBOX File Path</label>
+                    <span className="text-[9px] text-slate-400 font-mono">Thunderbird</span>
+                  </div>
+                  <textarea 
+                    rows={2}
+                    value={mboxPath}
+                    onChange={(e) => setMboxPath(e.target.value)}
+                    className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-[10px] text-slate-700 font-mono focus:outline-none focus:border-blue-500 transition-colors resize-none leading-normal"
+                    placeholder="Path to Thunderbird Inbox file"
+                  />
+                  <button
+                    onClick={handleImportMbox}
+                    disabled={isImportingMbox || isFetching}
+                    className="w-full flex items-center justify-center gap-1.5 py-1.5 px-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded text-[11px] font-bold transition-all shadow-sm cursor-pointer disabled:bg-indigo-400"
+                    title="Import historical emails directly from local Thunderbird Inbox"
+                  >
+                    {isImportingMbox ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Database className="h-3 w-3" />}
+                    <span>{isImportingMbox ? "Importing Old History..." : "Import Old History (Local MBOX)"}</span>
                   </button>
                 </div>
               </div>
