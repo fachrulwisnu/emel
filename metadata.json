@@ -1,6 +1,6 @@
 {
   "name": "Email Ticketing System",
-  "description": "A modern 3-pane email ticketing application that fetches and parses emails via POP3 and organizes them locally inside an SQLite database.",
+  "description": "A modern 3-pane email ticketing dashboard that synchronizes directly from local Thunderbird MBOX files and stores emails inside an SQLite database with automated business rules tagging.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
