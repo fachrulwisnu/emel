@@ -50,6 +50,10 @@ export default function App() {
   // Local MBOX Configuration State (defaults pre-filled)
   const [mboxPath, setMboxPath] = useState('C:\\Users\\HP\\AppData\\Roaming\\Thunderbird\\Profiles\\xr2b9r9p.default-release\\Mail\\mail.advantagescm.com\\Inbox');
   const [isImportingMbox, setIsImportingMbox] = useState(false);
+  const [mboxProgress, setMboxProgress] = useState<number>(0);
+  const [mboxLogs, setMboxLogs] = useState<string[]>([]);
+  const [mboxStatus, setMboxStatus] = useState<'idle' | 'processing' | 'complete' | 'stopped' | 'error'>('idle');
+  const [mboxParsedCount, setMboxParsedCount] = useState<number>(0);
   
   // Connection and Fetching States
   const [showSettings, setShowSettings] = useState(true);
@@ -178,31 +182,99 @@ export default function App() {
     }
   };
 
-  // Import Local MBOX Handler
+  // Import Local MBOX Handler with SSE Streaming Progress
   const handleImportMbox = async () => {
     setIsImportingMbox(true);
+    setMboxProgress(0);
+    setMboxLogs(['Connecting to MBOX stream...']);
+    setMboxStatus('processing');
+    setMboxParsedCount(0);
     setFetchResult(null);
+
     try {
-      const res = await fetch('/api/import-mbox', {
+      const response = await fetch('/api/import-mbox', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ customPath: mboxPath })
       });
-      const data = await res.json();
-      setFetchResult({
-        success: data.success,
-        message: data.message,
-        count: data.count || 0
-      });
-      
-      if (data.success) {
-        await loadEmails();
+
+      if (!response.ok) {
+        throw new Error(`HTTP error: ${response.status} ${response.statusText}`);
       }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('Streaming not supported or failed to initialize reader.');
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        // Keep the last partial line in the buffer
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data: ')) continue;
+
+          try {
+            const data = JSON.parse(trimmed.slice(6));
+            
+            if (data.percentage !== undefined) {
+              setMboxProgress(data.percentage);
+            }
+            if (data.parsedCount !== undefined) {
+              setMboxParsedCount(data.parsedCount);
+            }
+            if (data.log) {
+              setMboxLogs(prev => [...prev, data.log]);
+            }
+            
+            if (data.status === 'complete') {
+              setMboxStatus('complete');
+              setFetchResult({
+                success: true,
+                message: data.log || 'MBOX Historical import completed successfully!',
+                count: data.parsedCount || 0
+              });
+            } else if (data.status === 'error') {
+              setMboxStatus('error');
+              setFetchResult({
+                success: false,
+                message: data.log || 'MBOX Historical import failed.',
+                count: data.parsedCount || 0
+              });
+            }
+          } catch (e) {
+            console.warn('Failed parsing stream chunk line:', trimmed, e);
+          }
+        }
+      }
+
+      setMboxStatus(prev => {
+        if (prev === 'processing') {
+          return 'complete';
+        }
+        return prev;
+      });
+
+      // Reload emails to update the UI
+      await loadEmails();
+
     } catch (err: any) {
+      console.error('MBOX import stream error:', err);
+      setMboxStatus('stopped');
+      setMboxLogs(prev => [...prev, `[FATAL ERROR] Import stopped: ${err.message || String(err)}`]);
       setFetchResult({
         success: false,
-        message: `MBOX import error: ${err.message || String(err)}`,
-        count: 0
+        message: `MBOX import stopped: ${err.message || String(err)}`,
+        count: mboxParsedCount
       });
     } finally {
       setIsImportingMbox(false);
@@ -561,18 +633,67 @@ export default function App() {
                     rows={2}
                     value={mboxPath}
                     onChange={(e) => setMboxPath(e.target.value)}
-                    className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-[10px] text-slate-700 font-mono focus:outline-none focus:border-blue-500 transition-colors resize-none leading-normal"
+                    disabled={isImportingMbox}
+                    className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-[10px] text-slate-700 font-mono focus:outline-none focus:border-blue-500 transition-colors resize-none leading-normal disabled:bg-slate-50 disabled:text-slate-500"
                     placeholder="Path to Thunderbird Inbox file"
                   />
                   <button
                     onClick={handleImportMbox}
                     disabled={isImportingMbox || isFetching}
-                    className="w-full flex items-center justify-center gap-1.5 py-1.5 px-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded text-[11px] font-bold transition-all shadow-sm cursor-pointer disabled:bg-indigo-400"
+                    className="w-full flex items-center justify-center gap-1.5 py-1.5 px-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded text-[11px] font-bold transition-all shadow-sm cursor-pointer disabled:bg-indigo-400 disabled:cursor-not-allowed"
                     title="Import historical emails directly from local Thunderbird Inbox"
                   >
                     {isImportingMbox ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Database className="h-3 w-3" />}
-                    <span>{isImportingMbox ? "Importing Old History..." : "Import Old History (Local MBOX)"}</span>
+                    <span>{isImportingMbox ? `Importing... (${mboxProgress}%)` : "Import Old History (Local MBOX)"}</span>
                   </button>
+
+                  {/* Real-time SSE Progress bar & Log output */}
+                  {(mboxStatus !== 'idle' || mboxLogs.length > 0) && (
+                    <div className="mt-2 space-y-1.5 p-2 bg-slate-900 rounded border border-slate-800 text-[10px] text-slate-300">
+                      <div className="flex items-center justify-between font-mono text-[9px] text-slate-400">
+                        <span>Status: <span className={`font-bold uppercase ${
+                          mboxStatus === 'processing' ? 'text-blue-400 animate-pulse' :
+                          mboxStatus === 'complete' ? 'text-emerald-400' :
+                          mboxStatus === 'stopped' ? 'text-amber-400' : 'text-rose-400'
+                        }`}>{mboxStatus}</span></span>
+                        <span>{mboxParsedCount} saved</span>
+                      </div>
+
+                      {/* Progress Bar Container */}
+                      <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                        <div 
+                          className={`h-full transition-all duration-300 ${
+                            mboxStatus === 'complete' ? 'bg-emerald-500' : 
+                            mboxStatus === 'error' ? 'bg-rose-500' : 'bg-indigo-500'
+                          }`}
+                          style={{ width: `${mboxProgress}%` }}
+                        />
+                      </div>
+                      <div className="flex justify-between text-[8px] font-mono text-slate-500">
+                        <span>0%</span>
+                        <span>{mboxProgress}% read</span>
+                        <span>100%</span>
+                      </div>
+
+                      {/* Terminal-style scroll log */}
+                      <div className="font-mono bg-slate-950 p-1.5 rounded border border-slate-800 h-24 overflow-y-auto space-y-1 select-text scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-transparent">
+                        {mboxLogs.map((log, index) => (
+                          <div key={index} className="leading-tight text-[8px] border-b border-slate-900/50 pb-0.5 last:border-none text-slate-300">
+                            <span className="text-slate-500 select-none mr-1">&gt;</span>
+                            {log}
+                          </div>
+                        ))}
+                        {/* Auto scroll helper element */}
+                        <div ref={(el) => { if (el) el.scrollIntoView({ behavior: 'smooth' }); }} />
+                      </div>
+
+                      {mboxStatus === 'stopped' && (
+                        <div className="text-[9px] text-amber-300 font-semibold bg-amber-950/40 p-1 rounded border border-amber-900/50 mt-1 leading-snug">
+                          Import Stopped at {mboxProgress}% - Data up to this point is saved.
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
 
