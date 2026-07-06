@@ -54,45 +54,66 @@ export function classifyEmail(subject: string): { category: string; subCategory:
 }
 
 export function classifyFolder(sender: string, subject: string): { folder_parent: string; folder_child: string } {
-  // Extract Folder Parent: display name if present, otherwise clean email
-  let parent = sender || 'Unknown Sender';
-  if (sender && sender.includes('<')) {
-    const match = sender.match(/^(.*?)\s*<(.*?)>/);
-    if (match && match[1].trim()) {
-      parent = match[1].trim().replace(/^['"]|['"]$/g, ''); // strip outer quotes
-    } else if (match && match[2].trim()) {
-      parent = match[2].trim();
+  const subj = subject || '';
+  const subjUpper = subj.toUpperCase();
+
+  // RULE 1 (SPEEDTEST)
+  if (subjUpper.includes('SPEEDTEST')) {
+    let child = 'General';
+    // Try to match anything after "cabang" or "rutin"
+    const cabangMatch = subj.match(/(?:cabang|rutin)\s+([a-zA-Z0-9\s\-]+)/i);
+    if (cabangMatch && cabangMatch[1].trim()) {
+      child = cabangMatch[1].trim();
+    } else {
+      const stMatch = subj.match(/speedtest\s+([a-zA-Z0-9\s\-]+)/i);
+      if (stMatch && stMatch[1].trim()) {
+        child = stMatch[1].trim();
+      }
     }
-  } else {
-    parent = parent.replace(/^['"]|['"]$/g, '');
+    
+    // Capitalize first letters of each word of child and trim
+    child = child.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ').trim();
+
+    return {
+      folder_parent: 'Speedtest',
+      folder_child: child || 'General'
+    };
   }
 
-  // Extract Folder Child
-  const subjUpper = (subject || '').toUpperCase();
-  let child = 'Lainnya';
-
-  if (subjUpper.includes('SPEEDTEST RUTIN')) {
-    // Extract Nama Cabang
-    const match = subject.match(/SPEEDTEST RUTIN\s*[-–:]?\s*(?:CABANG\s+)?(.*)/i);
-    const namaCabang = match && match[1] ? match[1].trim().replace(/^[-–:\s]+|[-–:\s]+$/g, '') : '';
-    child = `Speedtest - ${namaCabang || 'General'}`;
-  } else if (subjUpper.includes('APPROVAL')) {
-    let type = 'Other';
-    if (subjUpper.includes('UAT')) {
-      type = 'UAT';
-    } else if (subjUpper.includes('FSD')) {
-      type = 'FSD';
+  // RULE 2 (APPROVAL / DOKUMEN)
+  if (subjUpper.includes('FSD') || subjUpper.includes('SIT') || subjUpper.includes('UAT') || subjUpper.includes('APPROVAL')) {
+    let child = 'General Approval';
+    if (subjUpper.includes('FSD')) {
+      child = 'FSD';
+    } else if (subjUpper.includes('UAT')) {
+      child = 'UAT';
     } else if (subjUpper.includes('SIT')) {
-      type = 'SIT';
+      child = 'SIT';
     }
-    child = `Approval - ${type}`;
-  } else if (subjUpper.includes('TUGAS SHIFT MALAM')) {
-    child = 'Shift Malam';
+    return {
+      folder_parent: 'Approval',
+      folder_child: child
+    };
   }
 
+  // RULE 3 (MEETING)
+  if (subjUpper.includes('MEETING') || subjUpper.includes('MOM') || subjUpper.includes('INVITATION')) {
+    let child = 'General Meeting';
+    if (subjUpper.includes('MOM')) {
+      child = 'MoM';
+    } else if (subjUpper.includes('INVITATION') || subjUpper.includes('INVITE')) {
+      child = 'Invitation';
+    }
+    return {
+      folder_parent: 'Meeting',
+      folder_child: child
+    };
+  }
+
+  // RULE 4 (DEFAULT / OTHERS)
   return {
-    folder_parent: parent,
-    folder_child: child
+    folder_parent: 'Lainnya',
+    folder_child: 'Uncategorized'
   };
 }
 
@@ -163,10 +184,10 @@ export async function initDb(): Promise<void> {
         }
       });
 
-      // Migration: Backfill folder_parent and folder_child for existing entries
-      db.all('SELECT id, sender, subject FROM emails WHERE folder_parent IS NULL OR folder_parent = ""', (err, rows: any[]) => {
+      // Migration: Backfill folder_parent and folder_child for all entries using new Subject-based rules
+      db.all('SELECT id, sender, subject FROM emails', (err, rows: any[]) => {
         if (!err && rows && rows.length > 0) {
-          console.log(`[SQLite DB] Migrating ${rows.length} existing emails to new folders tree...`);
+          console.log(`[SQLite DB] Migrating ${rows.length} existing emails to new Subject-based folders tree...`);
           const stmt = db.prepare('UPDATE emails SET folder_parent = ?, folder_child = ? WHERE id = ?');
           for (const row of rows) {
             const { folder_parent, folder_child } = classifyFolder(row.sender || '', row.subject || '');

@@ -39,6 +39,8 @@ interface Email {
   messageId?: string;
   category?: string;
   subCategory?: string;
+  folderParent?: string;
+  folderChild?: string;
 }
 
 export default function App() {
@@ -932,9 +934,9 @@ export default function App() {
                               >
                                 <span className="flex items-center space-x-2 truncate">
                                   <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                                    childObj.folder_child.startsWith('Speedtest') ? 'bg-blue-400' :
-                                    childObj.folder_child.startsWith('Approval') ? 'bg-indigo-400' :
-                                    childObj.folder_child === 'Shift Malam' ? 'bg-amber-400' : 'bg-slate-300'
+                                    parent === 'Speedtest' ? 'bg-blue-400' :
+                                    parent === 'Approval' ? 'bg-indigo-400' :
+                                    parent === 'Meeting' ? 'bg-amber-400' : 'bg-slate-300'
                                   }`}></span>
                                   <span className="truncate" title={childObj.folder_child}>{childObj.folder_child}</span>
                                 </span>
