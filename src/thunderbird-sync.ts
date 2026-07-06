@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import Mbox from 'node-mbox';
+import mboxParser from 'node-mbox';
 import { simpleParser } from 'mailparser';
 import { getAutoTags } from './tags';
 import { upsertEmail } from './sqlite-db';
@@ -39,13 +39,24 @@ export async function syncThunderbirdInbox(customPath?: string): Promise<SyncRes
     try {
       const messages: Buffer[] = [];
       const mboxStream = fs.createReadStream(targetPath);
-      const mbox = new Mbox(mboxStream);
+      
+      // Handle node-mbox class mapping dynamically for CJS/ESM compatibility
+      const MboxClass = (mboxParser as any).Mbox || (mboxParser as any).default?.Mbox || mboxParser;
+      if (typeof MboxClass !== 'function') {
+        throw new Error('Mbox is not a constructor or function');
+      }
+      
+      const mbox = new MboxClass(mboxStream);
+      let ended = false;
 
       mbox.on('message', (msg: Buffer) => {
         messages.push(msg);
       });
 
-      mbox.on('end', async () => {
+      const processEnd = async () => {
+        if (ended) return;
+        ended = true;
+
         console.log(`[Thunderbird Sync] Found ${messages.length} raw messages in MBOX file. Parsing now...`);
         let parsedCount = 0;
         let skippedCount = 0;
@@ -103,20 +114,30 @@ export async function syncThunderbirdInbox(customPath?: string): Promise<SyncRes
           count: parsedCount,
           fallback: false
         });
+      };
+
+      mbox.on('end', () => {
+        processEnd();
       });
 
       mbox.on('error', (err: any) => {
-        console.error('[Thunderbird Sync] MBOX Stream error:', err);
-        resolve({
-          success: false,
-          message: `MBOX sync error: ${err.message || String(err)}`,
-          count: 0,
-          fallback: false
-        });
+        console.error('[Thunderbird Sync] MBOX Stream parsing/format error (continuing if possible):', err.message || err);
+        // Process any successfully read messages up to this point
+        if (messages.length > 0) {
+          processEnd();
+        } else if (!ended) {
+          ended = true;
+          resolve({
+            success: false,
+            message: `MBOX stream error: ${err.message || String(err)}`,
+            count: 0,
+            fallback: false
+          });
+        }
       });
 
     } catch (err: any) {
-      console.error('[Thunderbird Sync] Synchronization failed:', err);
+      console.error('[Thunderbird Sync] Initialization/Synchronization failed:', err);
       resolve({
         success: false,
         message: `Sync failed: ${err.message || String(err)}`,
