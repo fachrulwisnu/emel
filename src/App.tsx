@@ -141,6 +141,82 @@ export default function App() {
     loadEmails();
   }, []);
 
+  // Custom Filters State & Handlers
+  const [customFilters, setCustomFilters] = useState<any[]>([]);
+  const [filterForm, setFilterForm] = useState({
+    name: '',
+    match_from: '',
+    match_subject: '',
+    match_body: '',
+    action_parent: '',
+    action_child: ''
+  });
+  const [filterMsg, setFilterMsg] = useState('');
+
+  const loadCustomFilters = async () => {
+    try {
+      const res = await fetch('/api/custom-filters');
+      const data = await res.json();
+      if (data.success && data.filters) {
+        setCustomFilters(data.filters);
+      }
+    } catch (err) {
+      console.error('Failed to load custom filters:', err);
+    }
+  };
+
+  const handleSaveFilter = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!filterForm.name.trim() || !filterForm.action_parent.trim() || !filterForm.action_child.trim()) {
+      setFilterMsg('Name, Action Folder Parent, and Action Folder Child are required.');
+      return;
+    }
+    try {
+      const res = await fetch('/api/custom-filters', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filter: filterForm })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setFilterMsg('Filter saved successfully!');
+        setFilterForm({
+          name: '',
+          match_from: '',
+          match_subject: '',
+          match_body: '',
+          action_parent: '',
+          action_child: ''
+        });
+        await loadCustomFilters();
+      } else {
+        setFilterMsg('Error saving filter: ' + data.message);
+      }
+    } catch (err: any) {
+      setFilterMsg('Error: ' + err.message);
+    }
+  };
+
+  const handleDeleteFilter = async (id: number) => {
+    try {
+      const res = await fetch('/api/custom-filters', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'delete', id })
+      });
+      const data = await res.json();
+      if (data.success) {
+        await loadCustomFilters();
+      }
+    } catch (err) {
+      console.error('Failed to delete filter:', err);
+    }
+  };
+
+  useEffect(() => {
+    loadCustomFilters();
+  }, []);
+
   // Sync selection view mode when email changes
   useEffect(() => {
     if (selectedEmail) {
@@ -577,9 +653,9 @@ export default function App() {
           </div>
           <div>
             <h1 className="text-lg font-bold tracking-tight text-slate-800 flex items-center gap-1.5">
-              MailTick <span className="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded font-semibold">v1.0</span>
+              GA NGERTI TEKNIS
             </h1>
-            <p className="text-[11px] text-slate-400 font-mono">POP3 Fetcher & Local SQLite Database Store</p>
+            <p className="text-[11px] text-slate-400 font-mono">KONTOOOPPPPP</p>
           </div>
         </div>
         
@@ -840,6 +916,131 @@ export default function App() {
                   </div>
                 </div>
               )}
+
+              {/* Custom Rule Engine Section */}
+              <div className="pt-3 border-t border-slate-200 mt-2.5 space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="block text-slate-500 font-bold text-[10px] uppercase tracking-wider">Rule Engine / Custom Filters</label>
+                  <span className="text-[9px] text-slate-400 font-mono">SQLite DB Engine</span>
+                </div>
+
+                {/* List existing custom filters */}
+                {customFilters.length > 0 && (
+                  <div className="space-y-1.5 max-h-48 overflow-y-auto border border-slate-200 rounded p-1.5 bg-slate-50">
+                    {customFilters.map((filter) => (
+                      <div key={filter.id} className="p-1.5 bg-white rounded border border-slate-150 text-[10px] flex items-start justify-between">
+                        <div className="space-y-0.5 flex-1 pr-1 select-text">
+                          <p className="font-bold text-slate-700">{filter.name}</p>
+                          <div className="text-[9px] text-slate-500 space-y-0.5 font-mono">
+                            {filter.match_from && <p><span className="text-slate-400">From:</span> {filter.match_from}</p>}
+                            {filter.match_subject && <p><span className="text-slate-400">Subject:</span> {filter.match_subject}</p>}
+                            {filter.match_body && <p><span className="text-slate-400">Body:</span> {filter.match_body}</p>}
+                            <div className="pt-1 text-[9px] text-blue-600 font-bold flex items-center gap-1">
+                              <span>Folder Parent:</span> <span className="bg-blue-50 px-1 py-0.2 rounded">{filter.action_parent}</span>
+                            </div>
+                            <div className="text-[9px] text-blue-600 font-bold flex items-center gap-1">
+                              <span>Folder Child:</span> <span className="bg-blue-50 px-1 py-0.2 rounded">{filter.action_child}</span>
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteFilter(filter.id)}
+                          className="text-rose-500 hover:text-rose-700 p-1 cursor-pointer hover:bg-rose-50 rounded"
+                          title="Delete rule"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Form to add a new custom filter */}
+                <form onSubmit={handleSaveFilter} className="space-y-2 p-2 bg-slate-100 rounded border border-slate-200 text-[10px]">
+                  <p className="font-bold text-slate-700 text-[9px] uppercase">Add New Custom Filter</p>
+                  
+                  <div>
+                    <label className="block text-slate-500 font-semibold mb-0.5">Filter Name</label>
+                    <input 
+                      type="text"
+                      value={filterForm.name}
+                      onChange={(e) => setFilterForm({ ...filterForm, name: e.target.value })}
+                      placeholder="e.g. FPS Monitor"
+                      className="w-full px-2 py-1 bg-white border border-slate-200 rounded focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <div>
+                      <label className="block text-slate-500 font-semibold mb-0.5">Match Sender (From)</label>
+                      <input 
+                        type="text"
+                        value={filterForm.match_from}
+                        onChange={(e) => setFilterForm({ ...filterForm, match_from: e.target.value })}
+                        placeholder="e.g. noc@"
+                        className="w-full px-2 py-1 bg-white border border-slate-200 rounded focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-500 font-semibold mb-0.5">Match Subject</label>
+                      <input 
+                        type="text"
+                        value={filterForm.match_subject}
+                        onChange={(e) => setFilterForm({ ...filterForm, match_subject: e.target.value })}
+                        placeholder="e.g. FPS"
+                        className="w-full px-2 py-1 bg-white border border-slate-200 rounded focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-500 font-semibold mb-0.5">Match Body Text</label>
+                    <input 
+                      type="text"
+                      value={filterForm.match_body}
+                      onChange={(e) => setFilterForm({ ...filterForm, match_body: e.target.value })}
+                      placeholder="e.g. signoff requested"
+                      className="w-full px-2 py-1 bg-white border border-slate-200 rounded focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <div>
+                      <label className="block text-slate-500 font-semibold mb-0.5">Action Folder Parent</label>
+                      <input 
+                        type="text"
+                        value={filterForm.action_parent}
+                        onChange={(e) => setFilterForm({ ...filterForm, action_parent: e.target.value })}
+                        placeholder="e.g. Speedtest"
+                        className="w-full px-2 py-1 bg-white border border-slate-200 rounded focus:outline-none focus:border-blue-500 font-bold text-blue-700"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-500 font-semibold mb-0.5">Action Folder Child</label>
+                      <input 
+                        type="text"
+                        value={filterForm.action_child}
+                        onChange={(e) => setFilterForm({ ...filterForm, action_child: e.target.value })}
+                        placeholder="e.g. Purwokerto"
+                        className="w-full px-2 py-1 bg-white border border-slate-200 rounded focus:outline-none focus:border-blue-500 font-bold text-blue-700"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-1">
+                    <button
+                      type="submit"
+                      className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded cursor-pointer transition-colors text-[10px]"
+                    >
+                      Add Rule
+                    </button>
+                    {filterMsg && (
+                      <span className="text-[9px] text-slate-600 italic">{filterMsg}</span>
+                    )}
+                  </div>
+                </form>
+              </div>
             </div>
           )}
           <div className="p-4 flex-1 overflow-y-auto">

@@ -11,6 +11,7 @@ import syncThunderbirdHandler from "./api/sync-thunderbird";
 import importMboxHandler from "./api/import-mbox";
 import importEmlDirHandler from "./api/import-eml-dir";
 import foldersHandler from "./api/folders";
+import customFiltersHandler from "./api/custom-filters";
 
 async function startServer() {
   const app = express();
@@ -46,6 +47,8 @@ async function startServer() {
   app.post("/api/import-mbox", importMboxHandler);
   app.get("/api/import-eml-dir", importEmlDirHandler);
   app.get("/api/folders", foldersHandler);
+  app.get("/api/custom-filters", customFiltersHandler);
+  app.post("/api/custom-filters", customFiltersHandler);
 
   // Keep POP3 routes for backwards compatibility/fallback
   app.post("/api/test-connection", testConnectionHandler);

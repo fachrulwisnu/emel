@@ -165,6 +165,23 @@ export async function initDb(): Promise<void> {
         }
       });
 
+      // Create custom_filters table
+      db.run(`
+        CREATE TABLE IF NOT EXISTS custom_filters (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT,
+          match_from TEXT,
+          match_subject TEXT,
+          match_body TEXT,
+          action_parent TEXT,
+          action_child TEXT
+        )
+      `, (err) => {
+        if (err) {
+          console.error('Error creating custom_filters table:', err);
+        }
+      });
+
       // Migration: Ensure category, sub_category, folder_parent, and folder_child columns exist
       db.run('ALTER TABLE emails ADD COLUMN category TEXT', () => {});
       db.run('ALTER TABLE emails ADD COLUMN sub_category TEXT', () => {});
@@ -342,6 +359,44 @@ export async function upsertEmail(email: {
 
   let folderParent = email.folder_parent;
   let folderChild = email.folder_child;
+
+  if (!folderParent || !folderChild) {
+    try {
+      const filters: any[] = await new Promise((resolveFilters) => {
+        db.all('SELECT * FROM custom_filters', (err, rows) => {
+          if (err) resolveFilters([]);
+          else resolveFilters(rows || []);
+        });
+      });
+
+      for (const filter of filters) {
+        // Skip filter if all criteria are empty to prevent false positives matching everything
+        if (!filter.match_from && !filter.match_subject && !filter.match_body) {
+          continue;
+        }
+
+        let isMatch = true;
+        const emailObj = {
+          from: email.sender || '',
+          subject: email.subject || '',
+          text: email.body_text || ''
+        };
+
+        if (filter.match_from && !emailObj.from.toLowerCase().includes(filter.match_from.toLowerCase())) isMatch = false;
+        if (filter.match_subject && !emailObj.subject.toLowerCase().includes(filter.match_subject.toLowerCase())) isMatch = false;
+        if (filter.match_body && !emailObj.text.toLowerCase().includes(filter.match_body.toLowerCase())) isMatch = false;
+
+        if (isMatch) {
+          folderParent = filter.action_parent;
+          folderChild = filter.action_child;
+          break;
+        }
+      }
+    } catch (filterErr) {
+      console.error('Error applying custom filters:', filterErr);
+    }
+  }
+
   if (!folderParent || !folderChild) {
     const classification = classifyFolder(email.sender, email.subject);
     if (!folderParent) folderParent = classification.folder_parent;
@@ -421,6 +476,64 @@ export async function clearDb(): Promise<void> {
       if (err) {
         return reject(err);
       }
+      resolve();
+    });
+  });
+}
+
+export interface CustomFilter {
+  id?: number;
+  name: string;
+  match_from: string;
+  match_subject: string;
+  match_body: string;
+  action_parent: string;
+  action_child: string;
+}
+
+export async function getCustomFilters(): Promise<CustomFilter[]> {
+  const db = await getDbConnection();
+  return new Promise((resolve, reject) => {
+    db.all('SELECT * FROM custom_filters ORDER BY id ASC', (err, rows: any[]) => {
+      if (err) return reject(err);
+      resolve(rows || []);
+    });
+  });
+}
+
+export async function saveCustomFilter(filter: CustomFilter): Promise<void> {
+  const db = await getDbConnection();
+  return new Promise((resolve, reject) => {
+    if (filter.id) {
+      db.run(
+        `UPDATE custom_filters SET 
+          name = ?, match_from = ?, match_subject = ?, match_body = ?, action_parent = ?, action_child = ?
+         WHERE id = ?`,
+        [filter.name, filter.match_from, filter.match_subject, filter.match_body, filter.action_parent, filter.action_child, filter.id],
+        (err) => {
+          if (err) return reject(err);
+          resolve();
+        }
+      );
+    } else {
+      db.run(
+        `INSERT INTO custom_filters (name, match_from, match_subject, match_body, action_parent, action_child)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [filter.name, filter.match_from, filter.match_subject, filter.match_body, filter.action_parent, filter.action_child],
+        (err) => {
+          if (err) return reject(err);
+          resolve();
+        }
+      );
+    }
+  });
+}
+
+export async function deleteCustomFilter(id: number): Promise<void> {
+  const db = await getDbConnection();
+  return new Promise((resolve, reject) => {
+    db.run('DELETE FROM custom_filters WHERE id = ?', [id], (err) => {
+      if (err) return reject(err);
       resolve();
     });
   });
