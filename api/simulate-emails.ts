@@ -1,5 +1,5 @@
 import { getAutoTags } from '../src/tags';
-import { saveEmails } from '../src/db';
+import { upsertEmail } from '../src/sqlite-db';
 
 export default async function handler(req: any, res: any) {
   try {
@@ -67,13 +67,23 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // Save to server-side JSON database
-    saveEmails(fetchedEmails);
+    // Save to SQLite Database
+    for (const email of fetchedEmails) {
+      await upsertEmail({
+        message_id: email.uid,
+        subject: email.subject,
+        sender: email.fromName ? `${email.fromName} <${email.fromAddress}>` : email.fromAddress,
+        receiver: "fachrul.wisnu@advantagescm.com",
+        date: email.date,
+        body_text: email.body,
+        html_body: email.bodyHtml,
+        tags: email.tags
+      });
+    }
 
     return res.status(200).json({
       success: true,
-      message: `Successfully simulated ${simulatedCount} new emails!`,
-      emails: fetchedEmails,
+      message: `Successfully simulated and saved ${simulatedCount} new emails to SQLite!`,
       fetchedCount: simulatedCount
     });
   } catch (err: any) {

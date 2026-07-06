@@ -1,7 +1,7 @@
 import PostalMime from 'postal-mime';
 import { Pop3Client, parsePop3Message } from '../src/pop3';
 import { getAutoTags } from '../src/tags';
-import { getEmails, saveEmails } from '../src/db';
+import { getAllEmails, upsertEmail } from '../src/sqlite-db';
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
@@ -15,16 +15,20 @@ export default async function handler(req: any, res: any) {
   }
 
   const client = new Pop3Client();
-  const existingEmails = getEmails();
+  let existingEmails: any[] = [];
+  try {
+    existingEmails = await getAllEmails();
+  } catch (dbErr) {
+    console.error('Failed to query existing emails:', dbErr);
+  }
   
   const existingSet = new Set<string>(existingEmails.map(e => e.uid));
-  const existingMessageIds = new Set<string>(existingEmails.map(e => e.messageId).filter(Boolean) as string[]);
   const existingSubjectDates = new Set<string>(existingEmails.map(e => `${e.subject?.trim()}|||${e.date}`));
 
   console.log(`\n--- [LOCAL POP3 FULL SYNC START] ---`);
   console.log(`Target POP3 Server : ${host}:${port}`);
   console.log(`Username           : "${username}"`);
-  console.log(`Local DB size      : ${existingEmails.length}`);
+  console.log(`Local SQLite DB size: ${existingEmails.length}`);
 
   try {
     const portNum = parseInt(port, 10);
@@ -71,7 +75,6 @@ export default async function handler(req: any, res: any) {
     serverUids.sort((a, b) => a.msgNum - b.msgNum);
 
     const totalMessages = serverUids.length;
-    const fetchedEmails = [];
     const mailParser = new PostalMime();
 
     console.log(`[POP3 Sync] Found ${totalMessages} total emails on server.`);
@@ -83,13 +86,12 @@ export default async function handler(req: any, res: any) {
       const item = serverUids[i];
       const currentNumber = i + 1;
 
-      // Progress logging: print progress "Fetching message X of Y..." for every 10 or 20 emails
-      // To keep logs descriptive and prevent system hanging perception, we can log regularly
+      // Progress logging
       if (currentNumber === 1 || currentNumber === totalMessages || currentNumber % 10 === 0) {
         console.log(`Fetching message ${currentNumber} of ${totalMessages}...`);
       }
 
-      // 1. Optimize by checking if server UID is already known locally
+      // Check if server UID is already known locally
       if (existingSet.has(item.uid)) {
         skippedCount++;
         continue;
@@ -106,15 +108,6 @@ export default async function handler(req: any, res: any) {
         const mimeRaw = parsePop3Message(retrRes);
         const parsed = await mailParser.parse(mimeRaw);
 
-        // Find Message-ID from parsed structure or headers
-        let msgId = parsed.messageId;
-        if (!msgId && parsed.headers) {
-          const found = parsed.headers.find((h: any) => h.key.toLowerCase() === 'message-id');
-          if (found) {
-            msgId = found.value;
-          }
-        }
-
         const subject = parsed.subject || '(No Subject)';
         const fromName = parsed.from?.name || '';
         const fromAddress = parsed.from?.address || '';
@@ -122,15 +115,7 @@ export default async function handler(req: any, res: any) {
         const body = parsed.text || '';
         const bodyHtml = parsed.html || '';
 
-        // 2. CEK DUPLIKASI (UPSERT)
-        // Check based on Message-ID
-        if (msgId && existingMessageIds.has(msgId)) {
-          console.log(`[POP3 Sync] Skipping duplicate Message-ID: "${msgId}"`);
-          skippedCount++;
-          continue;
-        }
-
-        // Check based on Subject + Date if Message-ID is missing or not matched
+        // Check based on Subject + Date to prevent duplicates if Message-IDs aren't set
         const subjectDateKey = `${subject.trim()}|||${date}`;
         if (existingSubjectDates.has(subjectDateKey)) {
           console.log(`[POP3 Sync] Skipping duplicate Subject + Date: "${subject}"`);
@@ -138,47 +123,41 @@ export default async function handler(req: any, res: any) {
           continue;
         }
 
-        // Add to our temporary sets to prevent duplicates in the same batch
-        if (msgId) {
-          existingMessageIds.add(msgId);
-        }
         existingSubjectDates.add(subjectDateKey);
 
         const tags = getAutoTags(subject, body);
+        const senderStr = fromName ? `${fromName} <${fromAddress}>` : fromAddress;
 
-        fetchedEmails.push({
-          uid: item.uid,
+        // Upsert directly into SQLite
+        await upsertEmail({
+          message_id: item.uid,
           subject,
-          fromName,
-          fromAddress,
+          sender: senderStr,
+          receiver: username,
           date,
-          body,
-          bodyHtml,
-          tags,
-          messageId: msgId
+          body_text: body,
+          html_body: bodyHtml,
+          tags
         });
 
         fetchedCount++;
+        
+        // Add artificial small delay to avoid overwhelming the server or rate limits
+        await new Promise(resolve => setTimeout(resolve, 100));
+
       } catch (err: any) {
         console.error(`Error processing message ${item.msgNum}:`, err.message || String(err));
       }
     }
 
-    // 4. JANGAN UBAH STATUS EMAIL DI SERVER
-    // Murni hanya membaca (RETR), panggil QUIT untuk melepaskan koneksi dengan aman tanpa menghapus.
+    // Release POP3 session safely
     await client.sendCommand('QUIT');
-
-    // Save fetched emails to local database
-    if (fetchedEmails.length > 0) {
-      saveEmails(fetchedEmails);
-    }
 
     console.log(`[POP3 Sync Completed] Fetched: ${fetchedCount}, Skipped/Duplicates: ${skippedCount}, Total scanned: ${totalMessages}`);
 
     return res.status(200).json({
       success: true,
       message: `Sync successful. Scanned ${totalMessages} emails. Fetched ${fetchedCount} new emails, skipped ${skippedCount} duplicate/existing emails.`,
-      emails: fetchedEmails,
       fetchedCount
     });
   } catch (err: any) {
@@ -186,7 +165,6 @@ export default async function handler(req: any, res: any) {
     return res.status(500).json({
       success: false,
       message: `Sync failed: ${err.message || String(err)}`,
-      emails: [],
       fetchedCount: 0
     });
   } finally {

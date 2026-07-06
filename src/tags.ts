@@ -37,7 +37,7 @@ export function getAutoTags(subject: string, body: string): string[] {
   const bodyUpper = (body || "").toUpperCase();
 
   // Rule 1: Speedtest Routine
-  if (subjUpper.includes("SPEEDTEST RUTIN")) {
+  if (subjUpper.includes("SPEEDTEST")) {
     tags.push("Speedtest");
     const branch = extractBranchName(subject);
     if (branch && branch !== "GENERAL") {

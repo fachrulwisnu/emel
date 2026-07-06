@@ -38,8 +38,12 @@ interface Email {
 }
 
 export default function App() {
-  // Thunderbird MBOX Configuration State (defaults pre-filled)
-  const [mboxPath, setMboxPath] = useState('C:\\Users\\HP\\AppData\\Roaming\\Thunderbird\\Profiles\\xr2b9r9p.default-release\\Mail\\mail.advantagescm.com\\Inbox');
+  // POP3 Configuration State (defaults pre-filled)
+  const [pop3Host, setPop3Host] = useState('mail.advantagescm.com');
+  const [pop3Port, setPop3Port] = useState('995');
+  const [pop3User, setPop3User] = useState('fachrul.wisnu@advantagescm.com');
+  const [pop3Pass, setPop3Pass] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   
   // Connection and Fetching States
   const [showSettings, setShowSettings] = useState(true);
@@ -102,21 +106,56 @@ export default function App() {
     }
   }, [selectedEmail]);
 
-  // Sync Thunderbird MBOX Handler
-  const handleSyncThunderbird = async () => {
+  // Test POP3 Connection Handler
+  const handleTestConnection = async () => {
+    setIsTestingConn(true);
+    setTestResult(null);
+    try {
+      const res = await fetch('/api/test-connection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host: pop3Host,
+          port: pop3Port,
+          username: pop3User,
+          password: pop3Pass
+        })
+      });
+      const data = await res.json();
+      setTestResult({
+        success: data.success,
+        message: data.message
+      });
+    } catch (err: any) {
+      setTestResult({
+        success: false,
+        message: `Connection failed: ${err.message || String(err)}`
+      });
+    } finally {
+      setIsTestingConn(false);
+    }
+  };
+
+  // Sync POP3 Handler
+  const handleSyncPop3 = async () => {
     setIsFetching(true);
     setFetchResult(null);
     try {
-      const res = await fetch('/api/sync-thunderbird', {
+      const res = await fetch('/api/fetch-emails', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ customPath: mboxPath })
+        body: JSON.stringify({
+          host: pop3Host,
+          port: pop3Port,
+          username: pop3User,
+          password: pop3Pass
+        })
       });
       const data = await res.json();
       setFetchResult({
         success: data.success,
         message: data.message,
-        count: data.count || 0
+        count: data.fetchedCount || 0
       });
       
       if (data.success) {
@@ -130,6 +169,36 @@ export default function App() {
       });
     } finally {
       setIsFetching(false);
+    }
+  };
+
+  // Simulate Emails Handler
+  const handleSimulateEmails = async () => {
+    setIsSimulating(true);
+    setFetchResult(null);
+    try {
+      const res = await fetch('/api/simulate-emails', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const data = await res.json();
+      setFetchResult({
+        success: data.success,
+        message: data.message,
+        count: data.fetchedCount || 0
+      });
+      
+      if (data.success) {
+        await loadEmails();
+      }
+    } catch (err: any) {
+      setFetchResult({
+        success: false,
+        message: `Simulation error: ${err.message || String(err)}`,
+        count: 0
+      });
+    } finally {
+      setIsSimulating(false);
     }
   };
 
@@ -351,51 +420,130 @@ export default function App() {
         {/* PANE 1: LEFT SIDEBAR - CONNECTION CONTROLS & VIRTUAL FOLDERS */}
         <aside className="w-80 border-r border-slate-200 bg-white flex flex-col overflow-y-auto shrink-0 select-none" id="pane_left">
           
-          {/* Thunderbird Inbox Config Panel */}
+          {/* POP3 Server Config Panel */}
           {showSettings && (
-            <div className="p-4 bg-slate-50 border-b border-slate-200" id="thunderbird_settings_panel">
+            <div className="p-4 bg-slate-50 border-b border-slate-200" id="pop3_settings_panel">
               <h3 className="text-[10px] font-bold text-slate-400 tracking-wider uppercase mb-3 flex items-center justify-between">
-                <span>Thunderbird Profile</span>
-                <span className="text-[10px] text-blue-600 bg-blue-50 px-2 py-0.5 rounded font-mono font-bold">MBOX Inbox</span>
+                <span>POP3 Configuration</span>
+                <span className="text-[10px] text-blue-600 bg-blue-50 px-2 py-0.5 rounded font-mono font-bold">Secure TLS</span>
               </h3>
               
-              <div className="space-y-3 text-xs">
+              <div className="space-y-2 text-xs">
                 <div>
-                  <label className="block text-slate-500 mb-1 font-semibold text-[11px]">Local MBOX File Path</label>
-                  <textarea 
-                    rows={3}
-                    value={mboxPath}
-                    onChange={(e) => setMboxPath(e.target.value)}
-                    className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded text-xs text-slate-700 font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 transition-colors resize-none leading-relaxed"
+                  <label className="block text-slate-500 mb-0.5 font-semibold text-[10px]">POP3 Server Host</label>
+                  <input 
+                    type="text"
+                    value={pop3Host}
+                    onChange={(e) => setPop3Host(e.target.value)}
+                    className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded text-xs text-slate-700 font-mono focus:outline-none focus:border-blue-500 transition-colors"
                   />
                 </div>
 
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="col-span-2">
+                    <label className="block text-slate-500 mb-0.5 font-semibold text-[10px]">Email / Username</label>
+                    <input 
+                      type="text"
+                      value={pop3User}
+                      onChange={(e) => setPop3User(e.target.value)}
+                      className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded text-xs text-slate-700 font-mono focus:outline-none focus:border-blue-500 transition-colors"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-500 mb-0.5 font-semibold text-[10px]">Port</label>
+                    <input 
+                      type="text"
+                      value={pop3Port}
+                      onChange={(e) => setPop3Port(e.target.value)}
+                      className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded text-xs text-slate-700 font-mono focus:outline-none focus:border-blue-500 transition-colors text-center"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-slate-500 mb-0.5 font-semibold text-[10px]">Password</label>
+                  <div className="relative">
+                    <input 
+                      type={showPassword ? "text" : "password"}
+                      value={pop3Pass}
+                      placeholder="••••••••"
+                      onChange={(e) => setPop3Pass(e.target.value)}
+                      className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded text-xs text-slate-700 font-mono focus:outline-none focus:border-blue-500 transition-colors pr-8"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                    >
+                      {showPassword ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                    </button>
+                  </div>
+                </div>
+
                 {/* Connection Controls Buttons */}
-                <div className="pt-1">
+                <div className="grid grid-cols-2 gap-2 pt-2">
                   <button
-                    onClick={handleSyncThunderbird}
-                    disabled={isFetching}
-                    className="w-full flex items-center justify-center gap-2 py-2.5 px-3 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-700 disabled:bg-blue-400 transition-all shadow-sm cursor-pointer"
+                    onClick={handleTestConnection}
+                    disabled={isTestingConn || isFetching}
+                    className="flex items-center justify-center gap-1.5 py-2 px-2.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 hover:border-slate-300 rounded-lg text-[11px] font-bold transition-all disabled:opacity-50 cursor-pointer"
                   >
-                    {isFetching ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                    <span>Sync Thunderbird</span>
+                    {isTestingConn ? <RefreshCw className="h-3 w-3 animate-spin text-slate-500" /> : null}
+                    <span>Test Connection</span>
+                  </button>
+
+                  <button
+                    onClick={handleSyncPop3}
+                    disabled={isFetching || isTestingConn}
+                    className="flex items-center justify-center gap-1.5 py-2 px-2.5 bg-blue-600 text-white rounded-lg text-[11px] font-bold hover:bg-blue-700 disabled:bg-blue-400 transition-all shadow-sm cursor-pointer"
+                  >
+                    {isFetching ? <RefreshCw className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                    <span>Sync POP3</span>
+                  </button>
+                </div>
+
+                {/* Simulation backup button for quick testing */}
+                <div className="pt-1 border-t border-slate-200/50 mt-1">
+                  <button
+                    onClick={handleSimulateEmails}
+                    disabled={isSimulating || isFetching}
+                    className="w-full flex items-center justify-center gap-1.5 py-1.5 px-2 bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-800 rounded text-[10px] font-bold transition-all cursor-pointer"
+                    title="Mock inbound emails for testing filters"
+                  >
+                    {isSimulating ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Mail className="h-3 w-3" />}
+                    <span>Simulate Local Inbound</span>
                   </button>
                 </div>
               </div>
 
+              {testResult && (
+                <div className={`mt-2.5 p-2 rounded text-[11px] flex flex-col space-y-0.5 border ${
+                  testResult.success 
+                    ? 'bg-emerald-50 text-emerald-800 border-emerald-200' 
+                    : 'bg-rose-50 text-rose-850 border-rose-200'
+                }`}>
+                  <div className="flex items-start space-x-1.5">
+                    {testResult.success ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 shrink-0 mt-0.5" /> : <AlertCircle className="h-3.5 w-3.5 text-rose-600 shrink-0 mt-0.5" />}
+                    <div className="flex-1">
+                      <p className="font-bold leading-none">{testResult.success ? "Connection Success" : "Connection Failed"}</p>
+                      <p className="opacity-90 leading-normal mt-0.5 text-[10px]">{testResult.message}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {fetchResult && (
-                <div className={`mt-3 p-2.5 rounded text-xs flex flex-col space-y-1 border ${
+                <div className={`mt-2.5 p-2 rounded text-[11px] flex flex-col space-y-0.5 border ${
                   fetchResult.success 
                     ? 'bg-blue-50 text-blue-800 border-blue-200' 
                     : 'bg-rose-50 text-rose-850 border-rose-200'
                 }`}>
                   <div className="flex items-start space-x-1.5">
-                    {fetchResult.success ? <CheckCircle2 className="h-4 w-4 text-blue-600 shrink-0 mt-0.5" /> : <AlertCircle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />}
+                    {fetchResult.success ? <CheckCircle2 className="h-3.5 w-3.5 text-blue-600 shrink-0 mt-0.5" /> : <AlertCircle className="h-3.5 w-3.5 text-rose-600 shrink-0 mt-0.5" />}
                     <div className="flex-1">
-                      <p className="font-bold text-[11px] leading-tight">{fetchResult.success ? "Sync Successful" : "Sync Failed"}</p>
-                      <p className="text-[10px] opacity-95 leading-normal mt-1">{fetchResult.message}</p>
+                      <p className="font-bold leading-none">{fetchResult.success ? "Sync Completed" : "Sync Failed"}</p>
+                      <p className="opacity-90 leading-normal mt-0.5 text-[10px]">{fetchResult.message}</p>
                       {fetchResult.count > 0 && (
-                        <p className="text-[10px] text-blue-700 font-bold mt-1">Processed: {fetchResult.count} items</p>
+                        <p className="text-[10px] text-blue-700 font-bold mt-0.5">Scanned & Added: {fetchResult.count} new</p>
                       )}
                     </div>
                   </div>
