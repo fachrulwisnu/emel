@@ -40,6 +40,7 @@ async function startServer() {
 
   // Sync Thunderbird Inbox MBOX
   app.post("/api/sync-thunderbird", syncThunderbirdHandler);
+  app.get("/api/import-mbox", importMboxHandler);
   app.post("/api/import-mbox", importMboxHandler);
 
   // Keep POP3 routes for backwards compatibility/fallback

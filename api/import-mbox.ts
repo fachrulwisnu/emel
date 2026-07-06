@@ -6,19 +6,21 @@ import { upsertEmail } from '../src/sqlite-db';
 import { THUNDERBIRD_MBOX_PATH } from '../src/thunderbird-sync';
 
 export default async function handler(req: any, res: any) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ success: false, message: 'Method not allowed. Use POST.' });
-  }
-
-  const { customPath } = req.body || {};
+  // Support both GET and POST requests
+  const customPath = req.method === 'GET' ? req.query.customPath : req.body?.customPath;
   const targetPath = customPath || THUNDERBIRD_MBOX_PATH;
 
-  // Set headers for Server-Sent Events (SSE) streaming
+  // Set headers for Server-Sent Events (SSE) streaming IMMEDIATELY
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no' // Prevent buffering in proxies like Nginx
   });
+
+  if (typeof res.flushHeaders === 'function') {
+    res.flushHeaders();
+  }
 
   const sendEvent = (data: any) => {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
@@ -52,7 +54,7 @@ export default async function handler(req: any, res: any) {
 
     for (let i = 0; i < totalSimulated; i++) {
       // Simulate real-time parsing latency
-      await new Promise((resolve) => setTimeout(resolve, 40));
+      await new Promise((resolve) => setTimeout(resolve, 30));
 
       const isSpeedtest = i % 2 === 0;
       const msgId = `sim_mbox_hist_${Date.now()}_${i}_${Math.floor(Math.random() * 100000)}`;
@@ -125,8 +127,26 @@ export default async function handler(req: any, res: any) {
     res.end();
   }
 
-  // If local file doesn't exist, launch simulated progress flow
-  if (!fs.existsSync(targetPath)) {
+  // Check file access and possible file lock before anything else
+  if (fs.existsSync(targetPath)) {
+    try {
+      // Check read permission and that the file is not exclusively locked
+      fs.accessSync(targetPath, fs.constants.R_OK);
+      
+      // Attempt to open and close file to ensure no exclusive locks preventing read
+      const fd = fs.openSync(targetPath, 'r');
+      fs.closeSync(fd);
+    } catch (accessErr: any) {
+      console.error('[Import MBOX API] File access/lock check failed:', accessErr);
+      sendEvent({
+        status: 'error',
+        log: `Fatal: MBOX file is locked or cannot be accessed by system: ${accessErr.message || String(accessErr)}`
+      });
+      res.end();
+      return;
+    }
+  } else {
+    // If local file doesn't exist, run high-fidelity simulation
     await runSimulation();
     return;
   }

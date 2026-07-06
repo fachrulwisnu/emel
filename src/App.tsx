@@ -182,7 +182,7 @@ export default function App() {
     }
   };
 
-  // Import Local MBOX Handler with SSE Streaming Progress
+  // Import Local MBOX Handler with SSE Streaming Progress using EventSource
   const handleImportMbox = async () => {
     setIsImportingMbox(true);
     setMboxProgress(0);
@@ -191,81 +191,66 @@ export default function App() {
     setMboxParsedCount(0);
     setFetchResult(null);
 
+    let currentParsedCount = 0;
+
     try {
-      const response = await fetch('/api/import-mbox', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ customPath: mboxPath })
-      });
+      const url = `/api/import-mbox?customPath=${encodeURIComponent(mboxPath)}`;
+      const eventSource = new EventSource(url);
 
-      if (!response.ok) {
-        throw new Error(`HTTP error: ${response.status} ${response.statusText}`);
-      }
-
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('Streaming not supported or failed to initialize reader.');
-      }
-
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        // Keep the last partial line in the buffer
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || !trimmed.startsWith('data: ')) continue;
-
-          try {
-            const data = JSON.parse(trimmed.slice(6));
-            
-            if (data.percentage !== undefined) {
-              setMboxProgress(data.percentage);
-            }
-            if (data.parsedCount !== undefined) {
-              setMboxParsedCount(data.parsedCount);
-            }
-            if (data.log) {
-              setMboxLogs(prev => [...prev, data.log]);
-            }
-            
-            if (data.status === 'complete') {
-              setMboxStatus('complete');
-              setFetchResult({
-                success: true,
-                message: data.log || 'MBOX Historical import completed successfully!',
-                count: data.parsedCount || 0
-              });
-            } else if (data.status === 'error') {
-              setMboxStatus('error');
-              setFetchResult({
-                success: false,
-                message: data.log || 'MBOX Historical import failed.',
-                count: data.parsedCount || 0
-              });
-            }
-          } catch (e) {
-            console.warn('Failed parsing stream chunk line:', trimmed, e);
+      eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          
+          if (data.percentage !== undefined) {
+            setMboxProgress(data.percentage);
           }
+          if (data.parsedCount !== undefined) {
+            currentParsedCount = data.parsedCount;
+            setMboxParsedCount(data.parsedCount);
+          }
+          if (data.log) {
+            setMboxLogs(prev => [...prev, data.log]);
+          }
+          
+          if (data.status === 'complete') {
+            setMboxStatus('complete');
+            setFetchResult({
+              success: true,
+              message: data.log || 'MBOX Historical import completed successfully!',
+              count: data.parsedCount || 0
+            });
+            eventSource.close();
+            setIsImportingMbox(false);
+            loadEmails();
+          } else if (data.status === 'error') {
+            setMboxStatus('error');
+            setFetchResult({
+              success: false,
+              message: data.log || 'MBOX Historical import failed.',
+              count: data.parsedCount || 0
+            });
+            eventSource.close();
+            setIsImportingMbox(false);
+            loadEmails();
+          }
+        } catch (e) {
+          console.warn('Failed parsing SSE message:', e);
         }
-      }
+      };
 
-      setMboxStatus(prev => {
-        if (prev === 'processing') {
-          return 'complete';
-        }
-        return prev;
-      });
-
-      // Reload emails to update the UI
-      await loadEmails();
+      eventSource.onerror = (err) => {
+        console.error('MBOX EventSource stream error:', err);
+        setMboxStatus('stopped');
+        setMboxLogs(prev => [...prev, '[ERROR] EventSource connection closed. Data up to this point is saved.']);
+        setFetchResult({
+          success: false,
+          message: 'MBOX import connection closed or error occurred.',
+          count: currentParsedCount
+        });
+        eventSource.close();
+        setIsImportingMbox(false);
+        loadEmails();
+      };
 
     } catch (err: any) {
       console.error('MBOX import stream error:', err);
@@ -274,9 +259,8 @@ export default function App() {
       setFetchResult({
         success: false,
         message: `MBOX import stopped: ${err.message || String(err)}`,
-        count: mboxParsedCount
+        count: currentParsedCount
       });
-    } finally {
       setIsImportingMbox(false);
     }
   };
