@@ -77,8 +77,8 @@ export default function App() {
   const [selectedFolder, setSelectedFolder] = useState<string>('all'); // 'all', 'untagged', 'category:Name', 'subcategory:CatName||SubCatName'
   
   // Dynamic Folder Mapping State
-  const [dynamicFolders, setDynamicFolders] = useState<{ category: string; subCategory: string; count: number }[]>([]);
-  const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({});
+  const [dynamicFolders, setDynamicFolders] = useState<{ folder_parent: string; folder_child: string; count: number }[]>([]);
+  const [expandedParents, setExpandedParents] = useState<Record<string, boolean>>({});
   
   const [isSpeedtestExpanded, setIsSpeedtestExpanded] = useState(true);
   const [isApprovalExpanded, setIsApprovalExpanded] = useState(true);
@@ -102,11 +102,11 @@ export default function App() {
       const data = await res.json();
       if (data.success && data.folders) {
         setDynamicFolders(data.folders);
-        setExpandedCategories(prev => {
+        setExpandedParents(prev => {
           const next = { ...prev };
           data.folders.forEach((f: any) => {
-            if (next[f.category] === undefined) {
-              next[f.category] = true; // expanded by default
+            if (next[f.folder_parent] === undefined) {
+              next[f.folder_parent] = true; // expanded by default
             }
           });
           return next;
@@ -472,47 +472,20 @@ export default function App() {
   const speedtestBranches = getSpeedtestBranches();
   const approvalTypes = getApprovalTypes();
 
-  // Calculate folder badge counts
-  const getFolderCounts = () => {
-    const counts: Record<string, number> = {
-      all: emails.length,
-      untagged: emails.filter(e => !e.tags.includes('Speedtest') && !e.tags.includes('Approval')).length,
-      'speedtest:all': emails.filter(e => e.tags.includes('Speedtest')).length,
-      'approval:all': emails.filter(e => e.tags.includes('Approval')).length,
-    };
-
-    speedtestBranches.forEach(branch => {
-      counts[`speedtest:${branch}`] = emails.filter(e => e.tags.includes('Speedtest') && e.tags.includes(branch)).length;
-    });
-
-    approvalTypes.forEach(type => {
-      counts[`approval:${type}`] = emails.filter(e => e.tags.includes('Approval') && e.tags.includes(type)).length;
-    });
-
-    // Handle "Other" subfolder count for Approval
-    counts['approval:Other'] = emails.filter(e => e.tags.includes('Approval') && e.tags.includes('Other')).length;
-
-    return counts;
-  };
-
-  const folderCounts = getFolderCounts();
-
   // Filtering emails for Pane 2
   const getFilteredEmails = () => {
     return emails.filter(email => {
       // 1. Folder filter
       if (selectedFolder === 'all') {
         // Show everything
-      } else if (selectedFolder === 'untagged') {
-        if (email.category && email.category !== 'Uncategorized') return false;
-      } else if (selectedFolder.startsWith('category:')) {
-        const cat = selectedFolder.substring('category:'.length);
-        if (email.category !== cat) return false;
-      } else if (selectedFolder.startsWith('subcategory:')) {
-        const parts = selectedFolder.substring('subcategory:'.length).split('||');
-        const cat = parts[0];
-        const sub = parts[1];
-        if (email.category !== cat || email.subCategory !== sub) return false;
+      } else if (selectedFolder.startsWith('parent:')) {
+        const parent = selectedFolder.substring('parent:'.length);
+        if (email.folderParent !== parent) return false;
+      } else if (selectedFolder.startsWith('child:')) {
+        const parts = selectedFolder.substring('child:'.length).split('||');
+        const parent = parts[0];
+        const child = parts[1];
+        if (email.folderParent !== parent || email.folderChild !== child) return false;
       }
 
       // 2. Advanced search filters
@@ -891,91 +864,92 @@ export default function App() {
                   {emails.length}
                 </span>
               </button>
-
-              {/* Dynamic Categories & Sub-Categories */}
-              {Object.keys(
-                dynamicFolders.reduce<Record<string, { subCategory: string; count: number }[]>>((acc, item) => {
-                  if (!acc[item.category]) {
-                    acc[item.category] = [];
+                       {/* Dynamic Categories & Sub-Categories */}
+              {(() => {
+                const grouped: Record<string, { folder_child: string; count: number }[]> = {};
+                dynamicFolders.forEach(item => {
+                  const parent = item.folder_parent || 'Unknown Sender';
+                  if (!grouped[parent]) {
+                    grouped[parent] = [];
                   }
-                  acc[item.category].push({ subCategory: item.subCategory, count: item.count });
-                  return acc;
-                }, {})
-              ).map(category => {
-                const subFolders = dynamicFolders.filter(f => f.category === category);
-                const categoryTotal = subFolders.reduce((sum, f) => sum + f.count, 0);
-                const isExpanded = expandedCategories[category] !== false; // expanded by default
+                  grouped[parent].push({ folder_child: item.folder_child || 'Lainnya', count: item.count });
+                });
                 
-                return (
-                  <div key={category} className="space-y-0.5 border-b border-slate-100 pb-1.5 last:border-none">
-                    <div 
-                      onClick={() => setSelectedFolder(`category:${category}`)}
-                      className={`w-full flex items-center justify-between px-3 py-2 rounded-md transition-all cursor-pointer group ${
-                        selectedFolder === `category:${category}` 
-                          ? 'bg-indigo-50 text-indigo-700 font-semibold' 
-                          : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
-                      }`}
-                    >
-                      <div className="flex items-center space-x-1 min-w-0">
-                        <span 
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setExpandedCategories(prev => ({ ...prev, [category]: !isExpanded }));
-                          }}
-                          className="p-1 hover:bg-slate-200/50 rounded cursor-pointer transition-colors shrink-0"
-                          title={isExpanded ? "Collapse" : "Expand"}
-                        >
-                          {isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                return Object.keys(grouped).map(parent => {
+                  const childFolders = grouped[parent];
+                  const parentTotal = childFolders.reduce((sum, c) => sum + c.count, 0);
+                  const isExpanded = expandedParents[parent] !== false; // expanded by default
+                  
+                  return (
+                    <div key={parent} className="space-y-0.5 border-b border-slate-100 pb-1.5 last:border-none">
+                      <div 
+                        onClick={() => setSelectedFolder(`parent:${parent}`)}
+                        className={`w-full flex items-center justify-between px-3 py-2 rounded-md transition-all cursor-pointer group ${
+                          selectedFolder === `parent:${parent}` 
+                            ? 'bg-indigo-50 text-indigo-700 font-semibold' 
+                            : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                        }`}
+                      >
+                        <div className="flex items-center space-x-1 min-w-0">
+                          <span 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setExpandedParents(prev => ({ ...prev, [parent]: !isExpanded }));
+                            }}
+                            className="p-1 hover:bg-slate-200/50 rounded cursor-pointer transition-colors shrink-0"
+                            title={isExpanded ? "Collapse" : "Expand"}
+                          >
+                            {isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                          </span>
+                          <Folder className={`h-4 w-4 shrink-0 ${
+                            selectedFolder === `parent:${parent}` ? 'text-indigo-600' : 'text-slate-400'
+                          }`} />
+                          <span className="truncate" title={parent}>{parent}</span>
+                        </div>
+                        <span className={`text-xs px-1.5 py-0.5 rounded shrink-0 ${
+                          selectedFolder === `parent:${parent}` ? 'bg-indigo-100 text-indigo-700 font-semibold' : 'bg-slate-100 text-slate-500 font-medium'
+                        }`}>
+                          {parentTotal}
                         </span>
-                        <Folder className={`h-4 w-4 shrink-0 ${
-                          selectedFolder === `category:${category}` ? 'text-indigo-600' : 
-                          category === 'Speedtest Routine' ? 'text-blue-500' :
-                          category === 'Tugas Shift Malam' ? 'text-amber-500' : 'text-slate-400'
-                        }`} />
-                        <span className="truncate">{category}</span>
                       </div>
-                      <span className={`text-xs px-1.5 py-0.5 rounded shrink-0 ${
-                        selectedFolder === `category:${category}` ? 'bg-indigo-100 text-indigo-700 font-semibold' : 'bg-slate-100 text-slate-500 font-medium'
-                      }`}>
-                        {categoryTotal}
-                      </span>
-                    </div>
 
-                    {/* Subcategories (Dynamic Children) */}
-                    {isExpanded && (
-                      <div className="pl-6 space-y-1 border-l border-slate-100 ml-5 mt-0.5">
-                        {subFolders.map(sub => {
-                          const subFolderKey = `subcategory:${category}||${sub.subCategory}`;
-                          const isSubSelected = selectedFolder === subFolderKey;
-                          
-                          return (
-                            <button
-                              key={sub.subCategory}
-                              onClick={() => setSelectedFolder(subFolderKey)}
-                              className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded text-xs transition-all cursor-pointer ${
-                                isSubSelected
-                                  ? 'bg-slate-100 text-indigo-700 font-bold'
-                                  : 'text-slate-500 hover:bg-slate-50/80 hover:text-slate-800'
-                              }`}
-                            >
-                              <span className="flex items-center space-x-2 truncate">
-                                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                                  category === 'Speedtest Routine' ? 'bg-blue-400' :
-                                  category === 'Tugas Shift Malam' ? 'bg-amber-400' : 'bg-slate-300'
-                                }`}></span>
-                                <span className="truncate" title={sub.subCategory}>{sub.subCategory}</span>
-                              </span>
-                              <span className="text-[10px] text-slate-400 font-mono font-medium ml-1 shrink-0">
-                                {sub.count}
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+                      {/* Subfolders (Dynamic Children) */}
+                      {isExpanded && (
+                        <div className="pl-6 space-y-1 border-l border-slate-100 ml-5 mt-0.5">
+                          {childFolders.map(childObj => {
+                            const childFolderKey = `child:${parent}||${childObj.folder_child}`;
+                            const isChildSelected = selectedFolder === childFolderKey;
+                            
+                            return (
+                              <button
+                                key={childObj.folder_child}
+                                onClick={() => setSelectedFolder(childFolderKey)}
+                                className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded text-xs transition-all cursor-pointer ${
+                                  isChildSelected
+                                    ? 'bg-slate-100 text-indigo-700 font-bold'
+                                    : 'text-slate-500 hover:bg-slate-50/80 hover:text-slate-800'
+                                }`}
+                              >
+                                <span className="flex items-center space-x-2 truncate">
+                                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                    childObj.folder_child.startsWith('Speedtest') ? 'bg-blue-400' :
+                                    childObj.folder_child.startsWith('Approval') ? 'bg-indigo-400' :
+                                    childObj.folder_child === 'Shift Malam' ? 'bg-amber-400' : 'bg-slate-300'
+                                  }`}></span>
+                                  <span className="truncate" title={childObj.folder_child}>{childObj.folder_child}</span>
+                                </span>
+                                <span className="text-[10px] text-slate-400 font-mono font-medium ml-1 shrink-0">
+                                  {childObj.count}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                });
+              })()}
 
               {/* Unassigned / fallback when emails have no category or uncategorized */}
               {dynamicFolders.length === 0 && (
@@ -1018,11 +992,8 @@ export default function App() {
               <div className="flex items-center space-x-2">
                 <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400">
                   {selectedFolder === 'all' && 'All Tickets'}
-                  {selectedFolder === 'untagged' && 'Unassigned Mail'}
-                  {selectedFolder === 'speedtest:all' && 'All Speedtests'}
-                  {selectedFolder === 'approval:all' && 'All Approvals'}
-                  {selectedFolder.startsWith('speedtest:') && selectedFolder !== 'speedtest:all' && `Speedtest: ${selectedFolder.split(':')[1]}`}
-                  {selectedFolder.startsWith('approval:') && selectedFolder !== 'approval:all' && `Approval: ${selectedFolder.split(':')[1]}`}
+                  {selectedFolder.startsWith('parent:') && `Sender: ${selectedFolder.substring('parent:'.length)}`}
+                  {selectedFolder.startsWith('child:') && `${selectedFolder.substring('child:'.length).split('||')[1]}`}
                 </h2>
                 <span className="bg-slate-200 text-slate-700 text-xs px-2 py-0.5 rounded font-mono font-bold">
                   {filteredEmails.length}

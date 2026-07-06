@@ -1,10 +1,10 @@
 import fs from 'fs';
 import path from 'path';
 import { simpleParser } from 'mailparser';
-import { upsertEmail } from '../src/sqlite-db';
+import { upsertEmail, classifyFolder } from '../src/sqlite-db';
 
 export default async function handler(req: any, res: any) {
-  const customPath = req.query.path || req.query.customPath || '';
+  const customPath = req.query.path || '';
   
   // Set headers for Server-Sent Events (SSE) streaming IMMEDIATELY
   res.writeHead(200, {
@@ -22,120 +22,50 @@ export default async function handler(req: any, res: any) {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
 
-  // Simulation Fallback if folder does not exist
-  async function runSimulation() {
+  if (!customPath.trim()) {
     sendEvent({
-      status: 'processing',
-      percentage: 2,
-      parsedCount: 0,
-      log: `Directory "${customPath}" not found or empty. Starting high-fidelity EML batch folder simulation...`
-    });
-
-    const branches = ["TASIKMALAYA", "TEGAL", "PURWOKERTO", "SOLO", "SEMARANG", "BANDUNG", "SURABAYA", "CILACAP", "CIREBON"];
-    const dates = ["05 Juli 2026", "04 Juli 2026", "03 Juli 2026", "02 Juli 2026", "01 Juli 2026", "30 Juni 2026"];
-    const appNames = ["Core Banking VM", "SLA Network", "Database Backup System", "Thunderbird Email Link"];
-    
-    const senders = [
-      { name: "Fachrul Wisnu", email: "fachrul.wisnu@advantagescm.com" },
-      { name: "Mega Sari", email: "mega.s@advantagescm.com" },
-      { name: "Budi Setiawan", email: "budi.s@advantagescm.com" },
-      { name: "Dewi Lestari", email: "dewi.l@advantagescm.com" }
-    ];
-
-    const totalFiles = 65;
-    let savedCount = 0;
-
-    for (let i = 0; i < totalFiles; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 40));
-
-      const isSpeedtest = i % 2 === 0;
-      const fileId = `eml_${i + 1}`;
-      const fileName = `${fileId}.eml`;
-      const msgId = `sim_eml_hist_${Date.now()}_${i}_${Math.floor(Math.random() * 100000)}`;
-      const dateISO = new Date(Date.now() - i * 12 * 60 * 60 * 1000).toISOString();
-      
-      const sender = senders[i % senders.length];
-      const receiver = "fachrul.wisnu@advantagescm.com";
-
-      let subject = "";
-      let bodyText = "";
-      let htmlBody = "";
-
-      if (isSpeedtest) {
-        const branch = branches[i % branches.length];
-        const dl = (Math.random() * 90 + 10).toFixed(1);
-        const ul = (Math.random() * 80 + 5).toFixed(1);
-        const ping = Math.floor(Math.random() * 50) + 5;
-        
-        subject = `SPEEDTEST RUTIN CABANG ${branch}`;
-        bodyText = `Hi Team,\n\nAutomatic Report for Speedtest Rutin at CABANG ${branch}:\n- Down: ${dl} Mbps\n- Up: ${ul} Mbps\n- Ping: ${ping}ms\n\nKind regards,\nNOC System`;
-        htmlBody = `<p>Hi Team,</p><p>Automatic Report for <strong>Speedtest Rutin</strong> at <strong>CABANG ${branch}</strong>:</p><ul><li>Download: <strong>${dl} Mbps</strong></li><li>Upload: <strong>${ul} Mbps</strong></li><li>Ping: <strong>${ping}ms</strong></li></ul><p>Kind regards,<br/><strong>NOC System</strong></p>`;
-      } else {
-        const period = dates[i % dates.length];
-        const appName = appNames[i % appNames.length];
-        
-        subject = `Tugas Shift Malam - Periode ${period} [${appName}]`;
-        bodyText = `Hi Fachrul,\n\nHere is the shift log report for ${appName} on period ${period}.\n\nTasks accomplished:\n- Active checks completed.\n- Database sync checked and verified.\n- Thunderbird MBOX parsed successfully.\n\nBest,\n${sender.name}`;
-        htmlBody = `<p>Hi Fachrul,</p><p>Here is the shift log report for <strong>${appName}</strong> on period <strong>${period}</strong>.</p><p>Tasks accomplished:</p><ul><li>Active checks completed.</li><li>Database sync checked and verified.</li><li>Thunderbird MBOX parsed successfully.</li></ul><p>Best,<br/><strong>${sender.name}</strong></p>`;
-      }
-
-      try {
-        await upsertEmail({
-          message_id: msgId,
-          subject,
-          sender: `${sender.name} <${sender.email}>`,
-          receiver,
-          date: dateISO,
-          body_text: bodyText,
-          html_body: htmlBody,
-          tags: isSpeedtest ? ["Speedtest"] : ["Shift Malam"]
-        });
-        savedCount++;
-      } catch (err: any) {
-        sendEvent({
-          status: 'error_item',
-          log: `Failed saving simulated EML file ${fileName}: ${err.message || String(err)}`
-        });
-      }
-
-      const percentage = Math.round(((i + 1) / totalFiles) * 100);
-      sendEvent({
-        status: 'processing',
-        percentage,
-        parsedCount: savedCount,
-        log: `Parsed and imported EML [${i + 1}/${totalFiles}]: "${fileName}" - Subject: "${subject}"`
-      });
-    }
-
-    sendEvent({
-      status: 'complete',
-      percentage: 100,
-      parsedCount: savedCount,
-      log: `Successfully completed directory batch import! Processed ${savedCount} simulated .eml files.`
+      status: 'error',
+      log: `Error: Please specify a valid folder path.`
     });
     res.end();
-  }
-
-  // If no path is supplied or it doesn't exist, execute simulation
-  if (!customPath || !fs.existsSync(customPath)) {
-    await runSimulation();
     return;
   }
 
-  // Check file system accessibility/locking on the actual target folder
+  // Handle absolute path resolution using path.resolve()
+  const resolvedPath = path.resolve(customPath);
+
+  // Check file system accessibility on the actual target folder
+  if (!fs.existsSync(resolvedPath)) {
+    sendEvent({
+      status: 'error',
+      log: `Error: Directory path does not exist: "${resolvedPath}"`
+    });
+    res.end();
+    return;
+  }
+
   try {
-    fs.accessSync(customPath, fs.constants.R_OK);
+    const stats = fs.statSync(resolvedPath);
+    if (!stats.isDirectory()) {
+      sendEvent({
+        status: 'error',
+        log: `Error: Path is not a directory: "${resolvedPath}"`
+      });
+      res.end();
+      return;
+    }
   } catch (err: any) {
     sendEvent({
       status: 'error',
-      log: `Fatal Error: Path cannot be read or is locked: ${err.message || String(err)}`
+      log: `Error checking path: ${err.message || String(err)}`
     });
     res.end();
     return;
   }
 
   try {
-    const files = fs.readdirSync(customPath);
+    const files = fs.readdirSync(resolvedPath);
+    // Filter ONLY files that end with .eml or .EML (case-insensitive)
     const emlFiles = files.filter(f => f.toLowerCase().endsWith('.eml'));
 
     if (emlFiles.length === 0) {
@@ -143,7 +73,7 @@ export default async function handler(req: any, res: any) {
         status: 'complete',
         percentage: 100,
         parsedCount: 0,
-        log: `No .eml files found in the directory "${customPath}".`
+        log: `No .eml files found in the directory "${resolvedPath}".`
       });
       res.end();
       return;
@@ -153,7 +83,7 @@ export default async function handler(req: any, res: any) {
       status: 'processing',
       percentage: 0,
       parsedCount: 0,
-      log: `Found ${emlFiles.length} EML files in directory. Starting parsing...`
+      log: `Found ${emlFiles.length} real EML files in directory. Starting parsing...`
     });
 
     let parsedCount = 0;
@@ -161,25 +91,56 @@ export default async function handler(req: any, res: any) {
 
     for (let i = 0; i < emlFiles.length; i++) {
       const fileName = emlFiles[i];
-      const filePath = path.join(customPath, fileName);
+      const filePath = path.join(resolvedPath, fileName);
 
       try {
-        // Double check access/lock status of individual files
-        fs.accessSync(filePath, fs.constants.R_OK);
-        const fileContent = fs.readFileSync(filePath);
+        // Use fs.createReadStream(filePath)
+        const stream = fs.createReadStream(filePath);
+        const parsed = await simpleParser(stream);
         
-        const parsed = await simpleParser(fileContent);
         const msgId = parsed.messageId || `eml_msg_${Date.now()}_${i}_${Math.floor(Math.random() * 100000)}`;
         const subject = parsed.subject || '(No Subject)';
         
         const fromObj = parsed.from as any;
         const toObj = parsed.to as any;
-        const sender = fromObj?.text || fromObj?.value?.[0]?.address || 'unknown@advantagescm.com';
-        const receiver = toObj?.text || toObj?.value?.[0]?.address || 'fachrul.wisnu@advantagescm.com';
         
+        // Format sender to hold "Name <address>" format if both exist
+        let sender = '';
+        if (fromObj?.value?.[0]) {
+          const first = fromObj.value[0];
+          if (first.name && first.address) {
+            sender = `"${first.name}" <${first.address}>`;
+          } else if (first.name) {
+            sender = first.name;
+          } else if (first.address) {
+            sender = first.address;
+          }
+        }
+        if (!sender) {
+          sender = fromObj?.text || 'unknown@advantagescm.com';
+        }
+        
+        let receiver = '';
+        if (toObj?.value?.[0]) {
+          const first = toObj.value[0];
+          if (first.name && first.address) {
+            receiver = `"${first.name}" <${first.address}>`;
+          } else if (first.name) {
+            receiver = first.name;
+          } else if (first.address) {
+            receiver = first.address;
+          }
+        }
+        if (!receiver) {
+          receiver = toObj?.text || 'fachrul.wisnu@advantagescm.com';
+        }
+
         const dateStr = parsed.date ? new Date(parsed.date).toISOString() : new Date().toISOString();
         const bodyText = parsed.text || '';
         const htmlBody = parsed.html || parsed.textAsHtml || '';
+
+        // Classify folder_parent and folder_child
+        const { folder_parent, folder_child } = classifyFolder(sender, subject);
 
         // Upsert to sqlite-db
         await upsertEmail({
@@ -190,7 +151,9 @@ export default async function handler(req: any, res: any) {
           date: dateStr,
           body_text: bodyText,
           html_body: htmlBody,
-          tags: []
+          tags: [],
+          folder_parent,
+          folder_child
         });
 
         parsedCount++;

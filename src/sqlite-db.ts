@@ -53,6 +53,49 @@ export function classifyEmail(subject: string): { category: string; subCategory:
   };
 }
 
+export function classifyFolder(sender: string, subject: string): { folder_parent: string; folder_child: string } {
+  // Extract Folder Parent: display name if present, otherwise clean email
+  let parent = sender || 'Unknown Sender';
+  if (sender && sender.includes('<')) {
+    const match = sender.match(/^(.*?)\s*<(.*?)>/);
+    if (match && match[1].trim()) {
+      parent = match[1].trim().replace(/^['"]|['"]$/g, ''); // strip outer quotes
+    } else if (match && match[2].trim()) {
+      parent = match[2].trim();
+    }
+  } else {
+    parent = parent.replace(/^['"]|['"]$/g, '');
+  }
+
+  // Extract Folder Child
+  const subjUpper = (subject || '').toUpperCase();
+  let child = 'Lainnya';
+
+  if (subjUpper.includes('SPEEDTEST RUTIN')) {
+    // Extract Nama Cabang
+    const match = subject.match(/SPEEDTEST RUTIN\s*[-–:]?\s*(?:CABANG\s+)?(.*)/i);
+    const namaCabang = match && match[1] ? match[1].trim().replace(/^[-–:\s]+|[-–:\s]+$/g, '') : '';
+    child = `Speedtest - ${namaCabang || 'General'}`;
+  } else if (subjUpper.includes('APPROVAL')) {
+    let type = 'Other';
+    if (subjUpper.includes('UAT')) {
+      type = 'UAT';
+    } else if (subjUpper.includes('FSD')) {
+      type = 'FSD';
+    } else if (subjUpper.includes('SIT')) {
+      type = 'SIT';
+    }
+    child = `Approval - ${type}`;
+  } else if (subjUpper.includes('TUGAS SHIFT MALAM')) {
+    child = 'Shift Malam';
+  }
+
+  return {
+    folder_parent: parent,
+    folder_child: child
+  };
+}
+
 export function getDbConnection(): Promise<sqlite3.Database> {
   return new Promise((resolve, reject) => {
     if (dbInstance) {
@@ -90,7 +133,9 @@ export async function initDb(): Promise<void> {
           html_body TEXT,
           tags TEXT,
           category TEXT,
-          sub_category TEXT
+          sub_category TEXT,
+          folder_parent TEXT,
+          folder_child TEXT
         )
       `, (err) => {
         if (err) {
@@ -99,9 +144,11 @@ export async function initDb(): Promise<void> {
         }
       });
 
-      // Migration: Ensure category and sub_category columns exist in case table existed earlier
+      // Migration: Ensure category, sub_category, folder_parent, and folder_child columns exist
       db.run('ALTER TABLE emails ADD COLUMN category TEXT', () => {});
       db.run('ALTER TABLE emails ADD COLUMN sub_category TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN folder_parent TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN folder_child TEXT', () => {});
 
       // Migration: Backfill categories for existing entries
       db.all('SELECT id, subject FROM emails WHERE category IS NULL OR category = ""', (err, rows: any[]) => {
@@ -111,6 +158,19 @@ export async function initDb(): Promise<void> {
           for (const row of rows) {
             const { category, subCategory } = classifyEmail(row.subject || '');
             stmt.run(category, subCategory, row.id);
+          }
+          stmt.finalize();
+        }
+      });
+
+      // Migration: Backfill folder_parent and folder_child for existing entries
+      db.all('SELECT id, sender, subject FROM emails WHERE folder_parent IS NULL OR folder_parent = ""', (err, rows: any[]) => {
+        if (!err && rows && rows.length > 0) {
+          console.log(`[SQLite DB] Migrating ${rows.length} existing emails to new folders tree...`);
+          const stmt = db.prepare('UPDATE emails SET folder_parent = ?, folder_child = ? WHERE id = ?');
+          for (const row of rows) {
+            const { folder_parent, folder_child } = classifyFolder(row.sender || '', row.subject || '');
+            stmt.run(folder_parent, folder_child, row.id);
           }
           stmt.finalize();
         }
@@ -127,8 +187,8 @@ export async function initDb(): Promise<void> {
           console.log('[SQLite DB] Database is empty. Seeding initial data...');
           const seedEmails = getSeedEmails();
           const stmt = db.prepare(`
-            INSERT OR IGNORE INTO emails (message_id, subject, sender, receiver, date, body_text, html_body, tags, category, sub_category)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO emails (message_id, subject, sender, receiver, date, body_text, html_body, tags, category, sub_category, folder_parent, folder_child)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `);
 
           for (const email of seedEmails) {
@@ -136,6 +196,7 @@ export async function initDb(): Promise<void> {
             const receiverStr = 'fachrul.wisnu@advantagescm.com'; // default mock receiver
             const tagsJson = JSON.stringify(email.tags || []);
             const { category, subCategory } = classifyEmail(email.subject || '');
+            const { folder_parent, folder_child } = classifyFolder(senderStr, email.subject || '');
             stmt.run(
               email.uid,
               email.subject,
@@ -146,7 +207,9 @@ export async function initDb(): Promise<void> {
               email.bodyHtml,
               tagsJson,
               category,
-              subCategory
+              subCategory,
+              folder_parent,
+              folder_child
             );
           }
           stmt.finalize((finalizeErr) => {
@@ -200,6 +263,10 @@ export async function getAllEmails(): Promise<any[]> {
         const emailCategory = row.category || category;
         const emailSubCategory = row.sub_category || subCategory;
 
+        const { folder_parent, folder_child } = classifyFolder(row.sender || '', row.subject || '');
+        const emailFolderParent = row.folder_parent || folder_parent;
+        const emailFolderChild = row.folder_child || folder_child;
+
         return {
           id: row.id,
           uid: row.message_id,
@@ -212,7 +279,9 @@ export async function getAllEmails(): Promise<any[]> {
           bodyHtml: row.html_body,
           tags: parsedTags,
           category: emailCategory,
-          subCategory: emailSubCategory
+          subCategory: emailSubCategory,
+          folderParent: emailFolderParent,
+          folderChild: emailFolderChild
         };
       });
 
@@ -236,6 +305,8 @@ export async function upsertEmail(email: {
   tags: string[];
   category?: string;
   sub_category?: string;
+  folder_parent?: string;
+  folder_child?: string;
 }): Promise<void> {
   const db = await getDbConnection();
   
@@ -248,11 +319,19 @@ export async function upsertEmail(email: {
     if (!emailSubCategory) emailSubCategory = classification.subCategory;
   }
 
+  let folderParent = email.folder_parent;
+  let folderChild = email.folder_child;
+  if (!folderParent || !folderChild) {
+    const classification = classifyFolder(email.sender, email.subject);
+    if (!folderParent) folderParent = classification.folder_parent;
+    if (!folderChild) folderChild = classification.folder_child;
+  }
+
   return new Promise((resolve, reject) => {
     db.run(
       `
-      INSERT INTO emails (message_id, subject, sender, receiver, date, body_text, html_body, tags, category, sub_category)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO emails (message_id, subject, sender, receiver, date, body_text, html_body, tags, category, sub_category, folder_parent, folder_child)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(message_id) DO UPDATE SET
         subject = excluded.subject,
         sender = excluded.sender,
@@ -262,7 +341,9 @@ export async function upsertEmail(email: {
         html_body = excluded.html_body,
         tags = excluded.tags,
         category = excluded.category,
-        sub_category = excluded.sub_category
+        sub_category = excluded.sub_category,
+        folder_parent = excluded.folder_parent,
+        folder_child = excluded.folder_child
       `,
       [
         email.message_id,
@@ -274,7 +355,9 @@ export async function upsertEmail(email: {
         email.html_body,
         JSON.stringify(email.tags || []),
         emailCategory,
-        emailSubCategory
+        emailSubCategory,
+        folderParent,
+        folderChild
       ],
       (err) => {
         if (err) {
@@ -287,16 +370,16 @@ export async function upsertEmail(email: {
 }
 
 /**
- * Aggregates all categories and sub-categories with counts.
+ * Aggregates all folder_parent and folder_child with counts.
  */
-export async function getDynamicFolders(): Promise<{ category: string; subCategory: string; count: number }[]> {
+export async function getDynamicFolders(): Promise<{ folder_parent: string; folder_child: string; count: number }[]> {
   const db = await getDbConnection();
   return new Promise((resolve, reject) => {
     db.all(
-      `SELECT category, sub_category as subCategory, COUNT(*) as count 
+      `SELECT folder_parent, folder_child, COUNT(*) as count 
        FROM emails 
-       GROUP BY category, sub_category 
-       ORDER BY category ASC, sub_category ASC`,
+       GROUP BY folder_parent, folder_child 
+       ORDER BY folder_parent ASC, folder_child ASC`,
       (err, rows: any[]) => {
         if (err) {
           return reject(err);
