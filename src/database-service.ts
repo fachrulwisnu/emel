@@ -479,9 +479,7 @@ function parseCleanJson(text: string): any {
 }
 
 async function getSummaryFromQwen(
-  emailSubject: string,
   emailBody: string,
-  attachmentsStr: string,
   apiKey: string
 ): Promise<any> {
   const invokeUrl = "https://integrate.api.nvidia.com/v1/chat/completions";
@@ -509,15 +507,15 @@ JSON schema:
     "model": "qwen/qwen3.5-397b-a17b",
     "messages": [
       { "role": "system", "content": systemContent },
-      { "role": "user", "content": `Subject: ${emailSubject}\n\nBody:\n${emailBody}\n\nAttachments:\n${attachmentsStr}` }
+      { "role": "user", "content": emailBody }
     ],
-    "max_tokens": 2048,
-    "temperature": 0.2,
+    "max_tokens": 16384,
+    "temperature": 0.6,
     "top_p": 0.95
   };
 
   try {
-    const response = await axios.post(invokeUrl, payload, { headers, timeout: 25000 });
+    const response = await axios.post(invokeUrl, payload, { headers, timeout: 60000 });
     const content = response.data.choices[0]?.message?.content || '';
     return parseCleanJson(content);
   } catch (error: any) {
@@ -527,9 +525,7 @@ JSON schema:
 }
 
 async function getTaggingFromKimi(
-  emailSubject: string,
   emailBody: string,
-  attachmentsStr: string,
   apiKey: string
 ): Promise<any> {
   const invokeUrl = "https://integrate.api.nvidia.com/v1/chat/completions";
@@ -548,24 +544,53 @@ JSON schema:
   "action_required": true | false
 }`;
 
-  const payload = {
-    "model": "moonshotai/kimi-k2.6",
-    "messages": [
-      { "role": "system", "content": systemContent },
-      { "role": "user", "content": `Subject: ${emailSubject}\n\nBody:\n${emailBody}\n\nAttachments:\n${attachmentsStr}` }
-    ],
-    "max_tokens": 1500,
-    "temperature": 0.2,
-    "top_p": 1
-  };
-
+  // Try Kimi first with 60s timeout
   try {
-    const response = await axios.post(invokeUrl, payload, { headers, timeout: 25000 });
+    console.log("[AI Worker - Tagging] Attempting Kimi k2.6...");
+    const payload = {
+      "model": "moonshotai/kimi-k2.6",
+      "messages": [
+        { "role": "system", "content": systemContent },
+        { "role": "user", "content": emailBody }
+      ],
+      "max_tokens": 16384,
+      "temperature": 0.6,
+      "top_p": 1
+    };
+
+    const response = await axios.post(invokeUrl, payload, { headers, timeout: 60000 });
     const content = response.data.choices[0]?.message?.content || '';
     return parseCleanJson(content);
-  } catch (error: any) {
-    console.error("[Kimi Tagging Error]:", error.message || error);
-    return null;
+  } catch (kimiError: any) {
+    console.warn("[Kimi Tagging Error] Kimi k2.6 failed (404/Timeout/Limit). Fallback to Nemotron Nano...", kimiError.message || kimiError);
+    
+    // Fallback to nvidia/llama-3.1-nemotron-nano-vl-8b-v1
+    try {
+      const payload = {
+        "model": "nvidia/llama-3.1-nemotron-nano-vl-8b-v1",
+        "messages": [
+          { "role": "system", "content": systemContent },
+          { "role": "user", "content": emailBody }
+        ],
+        "temperature": 1,
+        "top_p": 0.01,
+        "max_tokens": 1024,
+        "seed": 50
+      };
+
+      const response = await axios.post(invokeUrl, payload, { headers, timeout: 60000 });
+      const content = response.data.choices[0]?.message?.content || '';
+      return parseCleanJson(content);
+    } catch (nemotronError: any) {
+      console.error("[Nemotron Tagging Error] Fallback to Nemotron Nano also failed:", nemotronError.message || nemotronError);
+      
+      // Return safe defaults so worker doesn't crash
+      return {
+        suggested_tag: "Lainnya",
+        urgency_level: "Routine",
+        action_required: false
+      };
+    }
   }
 }
 
@@ -602,8 +627,8 @@ export async function processEmailWithNvidia(
     
     // Call Qwen and Kimi simultaneously
     const [qwenData, kimiData] = await Promise.all([
-      getSummaryFromQwen(emailSubject, emailBody, attachmentListStr, apiKey),
-      getTaggingFromKimi(emailSubject, emailBody, attachmentListStr, apiKey)
+      getSummaryFromQwen(emailBody, apiKey),
+      getTaggingFromKimi(emailBody, apiKey)
     ]);
 
     let parsed: any = null;

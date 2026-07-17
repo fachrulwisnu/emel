@@ -616,7 +616,7 @@ JSON schema:
   };
 
   try {
-    const response = await axios.post(invokeUrl, payload, { headers, timeout: 25000 });
+    const response = await axios.post(invokeUrl, payload, { headers, timeout: 60000 });
     let text = response.data.choices[0].message.content;
     
     // Clean JSON markdown blocks if any

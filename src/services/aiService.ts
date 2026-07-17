@@ -51,6 +51,7 @@ export async function getAiCompletion(prompt: string | any[]): Promise<string> {
       const openai = new OpenAI({
         apiKey: model.apiKey,
         baseURL: 'https://integrate.api.nvidia.com/v1',
+        timeout: 60000,
       });
 
       const completion = await openai.chat.completions.create({
