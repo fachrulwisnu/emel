@@ -140,15 +140,15 @@ export default async function handler(req: any, res: any) {
         const htmlBody = parsed.html || parsed.textAsHtml || '';
 
         const parsedAttachments = (parsed.attachments || []).map((att: any) => {
-          let fileData = '';
+          let fileData: string | null = null;
           const size = att.size || (att.content ? att.content.length : 0);
           if (att.content) {
-            if (size <= 5 * 1024 * 1024) { // 5MB limit
+            if (size <= 3 * 1024 * 1024) { // 3MB limit
               fileData = Buffer.isBuffer(att.content)
                 ? att.content.toString('base64')
                 : Buffer.from(att.content).toString('base64');
             } else {
-              console.log(`[EML Import] Skipped Base64 storage for ${att.filename || 'Attachment'} because its size (${size} bytes) exceeds 5MB limit.`);
+              console.log(`[EML Import] Skipped Base64 storage for ${att.filename || 'Attachment'} because its size (${size} bytes) exceeds 3MB limit.`);
             }
           }
           return {

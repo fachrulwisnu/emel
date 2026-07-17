@@ -38,6 +38,7 @@ import {
 } from 'lucide-react';
 import CitDashboard from './components/CitDashboard';
 import CitOrderModal from './components/CitOrderModal';
+import HtmlEmailViewer from './components/HtmlEmailViewer';
 
 interface Email {
   id?: number;
@@ -1590,9 +1591,15 @@ export default function App() {
 
                   {/* Body Viewer */}
                   <div className="p-6 flex-1 select-text border-b border-slate-100">
-                    <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-5 font-mono text-xs text-slate-700 whitespace-pre-wrap leading-relaxed min-h-[160px]">
-                      {selectedEmail.body_text}
-                    </div>
+                    {selectedEmail.html_body ? (
+                      <div className="bg-white border border-slate-200/85 rounded-xl p-6 min-h-[160px] shadow-sm overflow-x-auto">
+                        <HtmlEmailViewer htmlContent={selectedEmail.html_body} />
+                      </div>
+                    ) : (
+                      <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-5 font-mono text-xs text-slate-700 whitespace-pre-wrap leading-relaxed min-h-[160px]">
+                        {selectedEmail.body_text}
+                      </div>
+                    )}
 
                     {/* Attachments Section */}
                     {selectedEmail.attachments && selectedEmail.attachments.length > 0 && (
@@ -1603,7 +1610,7 @@ export default function App() {
                         <div className="flex flex-wrap gap-2.5">
                           {selectedEmail.attachments.map((att: any, idx: number) => {
                             const hasData = !!att.fileData;
-                            const isTooLarge = att.size > 5 * 1024 * 1024;
+                            const isTooLarge = att.size > 3 * 1024 * 1024;
                             
                             return hasData ? (
                               <a
@@ -1625,14 +1632,14 @@ export default function App() {
                             ) : (
                               <div 
                                 key={idx}
-                                className="flex items-center gap-2.5 bg-slate-50/80 border border-slate-200/60 rounded-xl px-3.5 py-2.5 text-xs text-slate-400 cursor-not-allowed"
-                                title={isTooLarge ? "File terlalu besar (> 5MB), Base64 tidak disimpan." : "Lampiran tidak memiliki data Base64."}
+                                className="flex items-center gap-2.5 bg-slate-100 border border-slate-200/60 rounded-xl px-3.5 py-2.5 text-xs text-slate-400 cursor-not-allowed"
+                                title={isTooLarge ? "File terlalu besar untuk di-download langsung." : "Lampiran tidak memiliki data Base64."}
                               >
                                 <span className="text-lg">📄</span>
                                 <div className="flex flex-col text-left">
                                   <span className="font-semibold text-slate-500 max-w-[180px] truncate">{att.filename}</span>
                                   <span className="text-[10px] text-slate-400 font-mono">
-                                    {(att.size / 1024).toFixed(1)} KB • {isTooLarge ? 'Melebihi 5MB' : 'No Data'}
+                                    {(att.size / 1024).toFixed(1)} KB • {isTooLarge ? 'Melebihi 3MB' : 'No Data'}
                                   </span>
                                 </div>
                               </div>

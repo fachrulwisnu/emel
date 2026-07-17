@@ -5,3 +5,38 @@
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 }
+
+/* Custom styles for HTML Email Viewer and Collapsible Tree */
+.html-email-content img {
+  max-width: 100% !important;
+  height: auto !important;
+}
+
+.email-history-details {
+  transition: all 0.2s ease-in-out;
+}
+
+.email-history-summary {
+  list-style: none;
+}
+
+.email-history-summary::-webkit-details-marker {
+  display: none;
+}
+
+.email-history-details[open] {
+  border-color: #cbd5e1; /* border-slate-300 */
+}
+
+.email-history-details[open] .summary-chevron {
+  transform: rotate(180deg);
+}
+
+.html-email-content blockquote, 
+.html-email-content .gmail_quote {
+  border-left: 3px solid #cbd5e1; /* border-slate-300 */
+  padding-left: 1rem;
+  margin: 0.5rem 0 0.5rem 0.5rem;
+  color: #475569; /* text-slate-600 */
+}
+
