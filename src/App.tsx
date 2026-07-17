@@ -1561,6 +1561,29 @@ export default function App() {
                     <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-5 font-mono text-xs text-slate-700 whitespace-pre-wrap leading-relaxed min-h-[160px]">
                       {selectedEmail.body_text}
                     </div>
+
+                    {/* Attachments Section */}
+                    {selectedEmail.attachments && selectedEmail.attachments.length > 0 && (
+                      <div className="mt-4 border-t border-slate-200/50 pt-4 text-left">
+                        <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
+                          <span>📎</span> Lampiran Dokumen ({selectedEmail.attachments.length})
+                        </h4>
+                        <div className="flex flex-wrap gap-2.5">
+                          {selectedEmail.attachments.map((att: any, idx: number) => (
+                            <div 
+                              key={idx} 
+                              className="flex items-center gap-2.5 bg-white border border-slate-200/80 rounded-xl px-3.5 py-2.5 text-xs text-slate-600 transition-all hover:border-slate-300 hover:shadow-sm"
+                            >
+                              <span className="text-lg">📄</span>
+                              <div className="flex flex-col text-left">
+                                <span className="font-semibold text-slate-700 max-w-[200px] truncate">{att.filename}</span>
+                                <span className="text-[10px] text-slate-400 font-mono">{(att.size / 1024).toFixed(1)} KB • {att.contentType || 'unknown'}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* AI Operational Assistant Copilot Panel */}

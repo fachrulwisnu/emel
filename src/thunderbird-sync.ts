@@ -86,6 +86,12 @@ export async function syncThunderbirdInbox(customPath?: string): Promise<SyncRes
             const bodyText = parsed.text || '';
             const htmlBody = parsed.html || parsed.textAsHtml || '';
 
+            const parsedAttachments = (parsed.attachments || []).map((att: any) => ({
+              filename: att.filename || 'Attachment',
+              contentType: att.contentType || '',
+              size: att.size || 0
+            }));
+
             // Apply Business Rules tagging logic
             const tags = getAutoTags(subject, bodyText);
 
@@ -98,7 +104,8 @@ export async function syncThunderbirdInbox(customPath?: string): Promise<SyncRes
               date,
               body_text: bodyText,
               html_body: htmlBody,
-              tags
+              tags,
+              attachments: parsedAttachments
             });
 
             parsedCount++;

@@ -97,40 +97,82 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
 
       const BATCH_SIZE = 50;
 
-      // Fetch and parse each new message in batches
-      for (let batchStart = 0; batchStart < newItems.length; batchStart += BATCH_SIZE) {
-        const batchItems = newItems.slice(batchStart, batchStart + BATCH_SIZE);
-        console.log(`[Cron Sync] Processing batch ${Math.floor(batchStart / BATCH_SIZE) + 1}/${Math.ceil(newItems.length / BATCH_SIZE)} (Items ${batchStart + 1} to ${Math.min(batchStart + BATCH_SIZE, newItems.length)})...`);
+      // 1. Fetch Phase (Sequential raw POP3 RETR and simpleParser)
+      const fetchedEmails: Array<{
+        item: { msgNum: number; uid: string };
+        parsed: any;
+        subject: string;
+        dateStr: string;
+        senderStr: string;
+        receiverStr: string;
+        bodyText: string;
+        htmlBody: string;
+        parsedAttachments: any[];
+      }> = [];
 
-        for (const item of batchItems) {
+      console.log(`[Cron Sync] Downloading and parsing ${newItems.length} emails from POP3 server...`);
+      for (const item of newItems) {
+        try {
+          console.log(`[Cron Sync] Fetching message #${item.msgNum} (UID: ${item.uid})...`);
+          const retrRes = await client.sendCommand(`RETR ${item.msgNum}`, true);
+          const rawEmail = parsePop3Message(retrRes);
+
+          // Parse with mailparser
+          const parsed = await simpleParser(rawEmail);
+
+          const subject = parsed.subject || '(No Subject)';
+          const dateStr = parsed.date ? parsed.date.toISOString() : new Date().toISOString();
+          
+          const fromVal = (parsed.from as any)?.value?.[0] || (parsed.from as any)?.[0] || {};
+          const senderStr = fromVal.name 
+            ? `${fromVal.name} <${fromVal.address}>` 
+            : (fromVal.address || 'Unknown Sender');
+
+          // FILTER SPAM EASYGO
+          if (subject.toLowerCase().includes('easygo') || senderStr.toLowerCase().includes('easygo')) {
+            console.log(`[Cron Sync] Skipping easygo spam email: Subject="${subject}", Sender="${senderStr}"`);
+            continue;
+          }
+
+          const toVal = (parsed.to as any)?.value?.[0] || (parsed.to as any)?.[0] || {};
+          const receiverStr = toVal.address || 'fachrul.wisnu@advantagescm.com';
+
+          const bodyText = parsed.text || '';
+          const htmlBody = parsed.textAsHtml || parsed.html || '';
+
+          const parsedAttachments = (parsed.attachments || []).map((att: any) => ({
+            filename: att.filename || 'Attachment',
+            contentType: att.contentType || '',
+            size: att.size || 0
+          }));
+
+          fetchedEmails.push({
+            item,
+            parsed,
+            subject,
+            dateStr,
+            senderStr,
+            receiverStr,
+            bodyText,
+            htmlBody,
+            parsedAttachments
+          });
+        } catch (emailErr: any) {
+          console.error(`[Cron Sync] Failed to fetch/parse message #${item.msgNum} (UID: ${item.uid}):`, emailErr);
+        }
+      }
+
+      console.log(`[Cron Sync] Downloaded ${fetchedEmails.length} messages. Commencing Parallel AI Processing (Batch Size: 5)...`);
+
+      // 2. Parallel Processing Phase (AI + Supabase/SQLite in batches of 5)
+      const PROCESS_BATCH_SIZE = 5;
+      for (let i = 0; i < fetchedEmails.length; i += PROCESS_BATCH_SIZE) {
+        const batch = fetchedEmails.slice(i, i + PROCESS_BATCH_SIZE);
+        console.log(`[Cron Sync] Processing AI batch ${Math.floor(i / PROCESS_BATCH_SIZE) + 1}/${Math.ceil(fetchedEmails.length / PROCESS_BATCH_SIZE)} (Items ${i + 1} to ${Math.min(i + PROCESS_BATCH_SIZE, fetchedEmails.length)} of ${fetchedEmails.length})...`);
+
+        await Promise.all(batch.map(async (emailJob) => {
+          const { item, parsed, subject, dateStr, senderStr, receiverStr, bodyText, htmlBody, parsedAttachments } = emailJob;
           try {
-            console.log(`[Cron Sync] Fetching message #${item.msgNum} (UID: ${item.uid})...`);
-            const retrRes = await client.sendCommand(`RETR ${item.msgNum}`, true);
-            const rawEmail = parsePop3Message(retrRes);
-
-            // Parse with mailparser
-            const parsed = await simpleParser(rawEmail);
-
-            const subject = parsed.subject || '(No Subject)';
-            const dateStr = parsed.date ? parsed.date.toISOString() : new Date().toISOString();
-            
-            const fromVal = (parsed.from as any)?.value?.[0] || (parsed.from as any)?.[0] || {};
-            const senderStr = fromVal.name 
-              ? `${fromVal.name} <${fromVal.address}>` 
-              : (fromVal.address || 'Unknown Sender');
-
-            // FILTER SPAM EASYGO
-            if (subject.toLowerCase().includes('easygo') || senderStr.toLowerCase().includes('easygo')) {
-              console.log(`[Cron Sync] Skipping easygo spam email: Subject="${subject}", Sender="${senderStr}"`);
-              continue;
-            }
-
-            const toVal = (parsed.to as any)?.value?.[0] || (parsed.to as any)?.[0] || {};
-            const receiverStr = toVal.address || 'fachrul.wisnu@advantagescm.com';
-
-            const bodyText = parsed.text || '';
-            const htmlBody = parsed.textAsHtml || parsed.html || '';
-
             // Determine tags
             const tags: string[] = [];
             const subjUpper = subject.toUpperCase();
@@ -193,16 +235,18 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
               folder_parent: matchedFolderParent || undefined,
               folder_child: matchedFolderChild || undefined,
               api_workflow_status: apiWorkflowStatus,
-              api_workflow_log: apiWorkflowLog
+              api_workflow_log: apiWorkflowLog,
+              attachments: parsedAttachments
             };
 
             // Save to DB (SQLite and Supabase) and analyze with NVIDIA AI
             try {
+              console.log(`Memproses summary untuk email: [${subject}]`);
               await syncAndAnalyzeEmail(newEmail);
               addedCount++;
             } catch (apiOrDbErr: any) {
               console.error(`[Cron Sync] Error in NVIDIA AI or Supabase Upsert for message #${item.msgNum} (UID: ${item.uid}):`, apiOrDbErr);
-              continue;
+              return;
             }
 
             // Broadcast to React frontend in real-time
@@ -220,12 +264,10 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
                 message: `New email synced: "${subject}" tagged as "${newEmail.folder_parent || 'Lainnya'} > ${newEmail.folder_child || 'Uncategorized'}"`
               });
             }
-
-          } catch (emailErr: any) {
-            console.error(`[Cron Sync] Failed to process message #${item.msgNum} (UID: ${item.uid}):`, emailErr);
-            continue;
+          } catch (jobErr: any) {
+            console.error(`[Cron Sync] Error processing AI/DB job for message #${item.msgNum} (UID: ${item.uid}):`, jobErr);
           }
-        }
+        }));
 
         // Memory cleanup: trigger GC if available
         if (typeof global !== 'undefined' && (global as any).gc) {

@@ -26,6 +26,7 @@ export interface Email {
   folder_child?: string;
   api_workflow_status?: string;
   api_workflow_log?: string;
+  attachments?: any; // JSON string or array of {filename, contentType, size}
   // AI and operational fields
   is_read?: boolean;
   tag_type?: string;
@@ -172,6 +173,7 @@ export async function initDatabaseService(): Promise<void> {
       db.run('ALTER TABLE emails ADD COLUMN api_workflow_status TEXT', () => {});
       db.run('ALTER TABLE emails ADD COLUMN api_workflow_log TEXT', () => {});
       db.run('ALTER TABLE custom_filters ADD COLUMN trigger_api INTEGER DEFAULT 0', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN attachments TEXT', () => {});
 
       // Operational & AI Assistant Columns
       db.run('ALTER TABLE emails ADD COLUMN is_read INTEGER DEFAULT 0', () => {});
@@ -220,6 +222,7 @@ export async function dbGetAllEmails(): Promise<Email[]> {
           folder_child: row.folder_child || '',
           api_workflow_status: row.api_workflow_status || 'none',
           api_workflow_log: row.api_workflow_log || '',
+          attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || []),
           // AI and operational fields
           is_read: row.is_read === true || row.is_read === 1,
           tag_type: row.tag_type || '',
@@ -272,6 +275,7 @@ export async function dbGetAllEmails(): Promise<Email[]> {
           folder_child: row.folder_child || '',
           api_workflow_status: row.api_workflow_status || 'none',
           api_workflow_log: row.api_workflow_log || '',
+          attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || []),
           // AI and operational fields
           is_read: row.is_read === 1,
           tag_type: row.tag_type || '',
@@ -434,7 +438,11 @@ function ruleBasedFallback(subject: string, bodyText: string): {
 /**
  * Processes email text body using NVIDIA API and thinkingmachines/inkling model
  */
-export async function processEmailWithNvidia(emailSubject: string, emailBody: string): Promise<{
+export async function processEmailWithNvidia(
+  emailSubject: string, 
+  emailBody: string,
+  attachments?: any[]
+): Promise<{
   summary: string;
   action_required: boolean;
   urgency_level: string;
@@ -446,52 +454,56 @@ export async function processEmailWithNvidia(emailSubject: string, emailBody: st
   suggested_bank: string;
   extracted_notes: string;
 }> {
+  const attachmentListStr = Array.isArray(attachments) && attachments.length > 0
+    ? attachments.map(att => `${att.filename || 'File'} (${att.contentType || 'unknown'}, ${att.size || 0} bytes)`).join('\n')
+    : 'None';
+
   const messages = [
     {
       role: "system",
-      content: `Anda adalah AI Asisten Operasional. Tugas Anda adalah menganalisis konten email, meringkasnya, dan memberikan klasifikasi terstruktur.
+      content: `Anda adalah AI Asisten Operasional Ticketing. Tugas Anda adalah menganalisis data email mentah (Raw Data) yang mencakup isi pesan, riwayat percakapan (reply thread), dan daftar lampiran.
 
 INSTRUKSI ANALISIS:
-1. Baca seluruh konten email, termasuk lampiran teks jika ada.
-2. Klasifikasikan email:
-   - Apakah ini terkait "CIT" (Cash In Transit)?
-   - Apakah ini terkait "ATM"?
-   - Jika ya, set 'suggested_tag' ke 'CIT' atau 'ATM'. Jika tidak, gunakan 'Lainnya'.
-3. Berikan 'urgency_level' (Routine, Medium, High).
-4. Berikan ringkasan singkat (maksimal 2 kalimat).
+1. FULL THREAD ANALYSIS: Baca email secara utuh dari atas sampai bawah. Deteksi riwayat percakapan sebelumnya (reply) untuk memahami konteks masalah.
+2. DETEKSI ATTACHMENT: Analisis daftar lampiran yang diberikan. Jika ada file seperti "Bon", "Bukti", "Foto", "Surat", atau "Form", identifikasikan sebagai bagian dari bukti operasional.
+3. KLASIFIKASI CIT/ATM:
+   - Jika email berisi instruksi uang/CIT/ATM, deteksi lokasi, nominal, dan tanggal yang disebutkan di dalam thread percakapan.
+   - Set 'is_cit_order': true jika ada instruksi operasional.
+   - Set 'suggested_tag' menjadi "CIT" atau "ATM" jika terkait. Jika tidak terkait CIT/ATM, set menjadi "Lainnya".
+   - Tentukan 'suggested_folder_parent' (REGION) dan 'suggested_folder_child' (BRANCH) berdasarkan domain/alamat pengirim atau kata kunci di subject/body. Petakan sesuai aturan berikut:
+     - REGION 1 -> PALEMBANG, MEDAN, BATAM, RAWAMANGUN, JAMBI, PADANG, PEKANBARU
+     - REGION 2 -> PONTIANAK, BALIKPAPAN, SAMARINDA, BANJARMASIN, SINGKAWANG
+     - REGION 3 -> MERUYA, BENGKULU, LAMPUNG, SERANG
+     - REGION 4 -> DENPASAR, KUPANG, BANDUNG, MATARAM, MANADO, CIREBON
+     - REGION 5 -> SEMARANG, SOLO, TEGAL, YOGYAKARTA, PURWOKERTO, KUDUS
+     - REGION 6 -> MAKASSAR, KEDIRI, JEMBER, SURABAYA, MALANG
+     - REGION 10 -> BENGKULU (Jika subject mengandung "ADV Bengkulu")
 
-INSTRUKSI ROUTING & CIT DETAILS:
-- Jika terkait "CIT" atau "ATM", tentukan "is_cit_order" (true/false) dan "cit_type" ("CIT" / "ATM" / "None") sesuai dengan pilihan tersebut.
-- Ekstrak nama bank tujuan jika disebutkan ke dalam "suggested_bank" (contoh: "BCA", "CIMB NIAGA", "MAYBANK"). Kosongkan jika tidak ada.
-- Buat ringkasan instruksi khusus untuk operator ke dalam "extracted_notes".
-- Tentukan 'suggested_folder_parent' (REGION) dan 'suggested_folder_child' (BRANCH) berdasarkan domain/alamat pengirim (sender) atau kata kunci di subject/body. Petakan sesuai aturan berikut:
-  - REGION 1 -> PALEMBANG, MEDAN, BATAM, RAWAMANGUN, JAMBI, PADANG, PEKANBARU
-  - REGION 2 -> PONTIANAK, BALIKPAPAN, SAMARINDA, BANJARMASIN, SINGKAWANG
-  - REGION 3 -> MERUYA, BENGKULU, LAMPUNG, SERANG
-  - REGION 4 -> DENPASAR, KUPANG, BANDUNG, MATARAM, MANADO, CIREBON
-  - REGION 5 -> SEMARANG, SOLO, TEGAL, YOGYAKARTA, PURWOKERTO, KUDUS
-  - REGION 6 -> MAKASSAR, KEDIRI, JEMBER, SURABAYA, MALANG
-  - REGION 10 -> BENGKULU (Jika subject mengandung "ADV Bengkulu")
+4. FORMAT OUTPUT HARUS JSON MURNI TANPA MARKDOWN DAN TANPA TEKS PEMBUKA.
 
-*PENTING: FORMAT OUTPUT HARUS JSON MURNI TANPA MARKDOWN DAN TANPA TEKS PEMBUKA.*
-
-FORMAT OUTPUT (JSON):
+CONTOH FORMAT OUTPUT (JSON):
 {
-  "summary": "Ringkasan email di sini.",
-  "action_required": true/false,
-  "urgency_level": "Routine/Medium/High",
+  "summary": "Ringkasan dari email utama dan thread percakapan.",
+  "action_required": true,
+  "urgency_level": "High/Medium/Routine",
   "suggested_tag": "CIT/ATM/Lainnya",
-  "suggested_folder_parent": "REGION X",
-  "suggested_folder_child": "BRANCH_NAME",
-  "is_cit_order": true/false,
-  "cit_type": "CIT/ATM/None",
-  "suggested_bank": "...",
-  "extracted_notes": "..."
+  "detected_attachments": ["list_nama_file"],
+  "extracted_context": "Konteks penting dari thread reply jika ada.",
+  "suggested_folder_parent": "REGION 1",
+  "suggested_folder_child": "MEDAN",
+  "suggested_bank": "BCA",
+  "extracted_notes": "Instruksi khusus atau catatan operasional penting."
 }`
     },
     {
       role: "user",
-      content: `Subject: ${emailSubject || "(No Subject)"}\n\nBody:\n${emailBody || "(No Content)"}`
+      content: `Subject: ${emailSubject || "(No Subject)"}
+
+Body (termasuk percakapan / reply thread):
+${emailBody || "(No Content)"}
+
+Daftar Lampiran (Attachments Metadata):
+${attachmentListStr}`
     }
   ];
 
@@ -524,6 +536,15 @@ FORMAT OUTPUT (JSON):
     const isCit = (suggestedTag === "CIT" || suggestedTag === "ATM" || parsed.is_cit_order === true || parsed.is_cit_order === "true");
     const citType = isCit ? (suggestedTag === "ATM" ? "ATM" : "CIT") : "None";
 
+    // Build extra notes incorporating detected_attachments & extracted_context if provided
+    let finalNotes = parsed.extracted_notes || "";
+    if (parsed.extracted_context) {
+      finalNotes = `Konteks Thread: ${parsed.extracted_context}\n${finalNotes}`;
+    }
+    if (parsed.detected_attachments && Array.isArray(parsed.detected_attachments) && parsed.detected_attachments.length > 0) {
+      finalNotes = `Lampiran Terdeteksi: ${parsed.detected_attachments.join(", ")}\n${finalNotes}`;
+    }
+
     return {
       summary: parsed.summary !== undefined ? String(parsed.summary) : "",
       action_required: parsed.action_required === true || parsed.action_required === "true",
@@ -534,7 +555,7 @@ FORMAT OUTPUT (JSON):
       is_cit_order: isCit,
       cit_type: citType,
       suggested_bank: parsed.suggested_bank !== undefined ? String(parsed.suggested_bank) : "",
-      extracted_notes: parsed.extracted_notes !== undefined ? String(parsed.extracted_notes) : ""
+      extracted_notes: finalNotes.trim()
     };
   } catch (err: any) {
     console.error('[AI Copilot] All rotated models failed or JSON parse error. Falling back to default values. Error:', err.message || String(err));
@@ -570,7 +591,8 @@ export async function syncAndAnalyzeEmail(email: Email): Promise<void> {
   let extracted_notes = "";
 
   try {
-    const aiResult = await processEmailWithNvidia(email.subject || "", email.body_text || "");
+    console.log(`Memproses summary untuk email: [${email.subject || '(No Subject)'}]`);
+    const aiResult = await processEmailWithNvidia(email.subject || "", email.body_text || "", email.attachments);
     summary = aiResult.summary || `Email from ${email.sender} regarding ${email.subject}.`;
     action_required = !!aiResult.action_required;
     urgency_level = aiResult.urgency_level || "Routine";
@@ -753,9 +775,10 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
         message_id, subject, sender, receiver, date, body_text, html_body, tags, 
         category, sub_category, folder_parent, folder_child, api_workflow_status, api_workflow_log,
         is_read, tag_type, summary, action_required, suggested_tag, is_important, urgency_level,
-        suggested_folder_parent, suggested_folder_child, is_cit_order, cit_type, suggested_bank, extracted_notes
+        suggested_folder_parent, suggested_folder_child, is_cit_order, cit_type, suggested_bank, extracted_notes,
+        attachments
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(message_id) DO UPDATE SET
         subject = excluded.subject,
         sender = excluded.sender,
@@ -782,7 +805,8 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
         is_cit_order = excluded.is_cit_order,
         cit_type = excluded.cit_type,
         suggested_bank = excluded.suggested_bank,
-        extracted_notes = excluded.extracted_notes
+        extracted_notes = excluded.extracted_notes,
+        attachments = excluded.attachments
       `,
       [
         normalizedEmail.message_id,
@@ -811,7 +835,8 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
         isCitOrder ? 1 : 0,
         citType || 'None',
         suggestedBank || '',
-        extractedNotes || ''
+        extractedNotes || '',
+        JSON.stringify(normalizedEmail.attachments || [])
       ],
       (err) => {
         if (err) return reject(err);
@@ -1196,42 +1221,58 @@ export async function dbRunHistoricalBackfill(): Promise<{ processedCount: numbe
   let failedCount = 0;
   let skippedCount = 0;
 
-  for (const email of oldEmails) {
-    const text = email.body_text || '';
+  const BACKFILL_BATCH_SIZE = 5;
+  for (let i = 0; i < oldEmails.length; i += BACKFILL_BATCH_SIZE) {
+    const batch = oldEmails.slice(i, i + BACKFILL_BATCH_SIZE);
     
-    // Check length of body
-    if (!text || text.trim().length < 10) {
-      console.log(`[Backfill] Skipping/setting default for message_id ${email.message_id}: Body too short or empty`);
-      await dbUpdateEmailFields(email.message_id, {
-        summary: "Data historis tidak terbaca jelas",
-        action_required: false,
-        urgency_level: "Routine",
-        suggested_tag: "Informasi",
-        folder_parent: "Operation",
-        folder_child: "General",
-        is_important: false
-      });
-      skippedCount++;
-      continue;
-    }
-
-    try {
-      console.log(`[Backfill] Processing email: ${email.subject || '(No Subject)'}`);
-      const aiResult = await processEmailWithNvidia(email.subject || "", text);
+    await Promise.all(batch.map(async (email) => {
+      const text = email.body_text || '';
       
-      if (aiResult && aiResult.summary && aiResult.summary.trim() !== "") {
+      // Check length of body
+      if (!text || text.trim().length < 10) {
+        console.log(`[Backfill] Skipping/setting default for message_id ${email.message_id}: Body too short or empty`);
         await dbUpdateEmailFields(email.message_id, {
-          summary: aiResult.summary,
-          action_required: !!aiResult.action_required,
-          urgency_level: aiResult.urgency_level || "Routine",
-          suggested_tag: aiResult.suggested_tag || "Informasi",
-          folder_parent: aiResult.suggested_folder_parent || "Operation",
-          folder_child: aiResult.suggested_folder_child || "General",
-          is_important: aiResult.urgency_level === "High"
+          summary: "Data historis tidak terbaca jelas",
+          action_required: false,
+          urgency_level: "Routine",
+          suggested_tag: "Informasi",
+          folder_parent: "Operation",
+          folder_child: "General",
+          is_important: false
         });
-        processedCount++;
-      } else {
-        console.warn(`[Backfill] AI returned empty summary for message_id: ${email.message_id}. Fallback applied.`);
+        skippedCount++;
+        return;
+      }
+
+      try {
+        console.log(`Memproses summary untuk email: [${email.subject || '(No Subject)'}]`);
+        const aiResult = await processEmailWithNvidia(email.subject || "", text);
+        
+        if (aiResult && aiResult.summary && aiResult.summary.trim() !== "") {
+          await dbUpdateEmailFields(email.message_id, {
+            summary: aiResult.summary,
+            action_required: !!aiResult.action_required,
+            urgency_level: aiResult.urgency_level || "Routine",
+            suggested_tag: aiResult.suggested_tag || "Informasi",
+            folder_parent: aiResult.suggested_folder_parent || "Operation",
+            folder_child: aiResult.suggested_folder_child || "General",
+            is_important: aiResult.urgency_level === "High"
+          });
+          processedCount++;
+        } else {
+          console.warn(`[Backfill] AI returned empty summary for message_id: ${email.message_id}. Fallback applied.`);
+          await dbUpdateEmailFields(email.message_id, {
+            summary: "Data historis tidak terbaca jelas",
+            action_required: false,
+            urgency_level: "Routine",
+            suggested_tag: "Informasi",
+            is_important: false
+          });
+          failedCount++;
+        }
+      } catch (err: any) {
+        console.error(`[Backfill] Error processing message_id ${email.message_id}:`, err.message || err);
+        // Fail gracefully and keep trying the rest
         await dbUpdateEmailFields(email.message_id, {
           summary: "Data historis tidak terbaca jelas",
           action_required: false,
@@ -1241,20 +1282,9 @@ export async function dbRunHistoricalBackfill(): Promise<{ processedCount: numbe
         });
         failedCount++;
       }
-    } catch (err: any) {
-      console.error(`[Backfill] Error processing message_id ${email.message_id}:`, err.message || err);
-      // Fail gracefully and keep trying the rest
-      await dbUpdateEmailFields(email.message_id, {
-        summary: "Data historis tidak terbaca jelas",
-        action_required: false,
-        urgency_level: "Routine",
-        suggested_tag: "Informasi",
-        is_important: false
-      });
-      failedCount++;
-    }
+    }));
 
-    // Add a tiny delay to respect rate limit of NVIDIA API
+    // Add a tiny delay between batches to respect rate limit of NVIDIA API
     await new Promise((r) => setTimeout(r, 200));
   }
 

@@ -187,6 +187,7 @@ export async function initDb(): Promise<void> {
       db.run('ALTER TABLE emails ADD COLUMN sub_category TEXT', () => {});
       db.run('ALTER TABLE emails ADD COLUMN folder_parent TEXT', () => {});
       db.run('ALTER TABLE emails ADD COLUMN folder_child TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN attachments TEXT', () => {});
 
       // Migration: Backfill categories for existing entries
       db.all('SELECT id, subject FROM emails WHERE category IS NULL OR category = ""', (err, rows: any[]) => {
@@ -345,6 +346,7 @@ export async function upsertEmail(email: {
   sub_category?: string;
   folder_parent?: string;
   folder_child?: string;
+  attachments?: any[];
 }): Promise<void> {
   const db = await getDbConnection();
   
@@ -406,8 +408,8 @@ export async function upsertEmail(email: {
   return new Promise((resolve, reject) => {
     db.run(
       `
-      INSERT INTO emails (message_id, subject, sender, receiver, date, body_text, html_body, tags, category, sub_category, folder_parent, folder_child)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO emails (message_id, subject, sender, receiver, date, body_text, html_body, tags, category, sub_category, folder_parent, folder_child, attachments)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(message_id) DO UPDATE SET
         subject = excluded.subject,
         sender = excluded.sender,
@@ -419,7 +421,8 @@ export async function upsertEmail(email: {
         category = excluded.category,
         sub_category = excluded.sub_category,
         folder_parent = excluded.folder_parent,
-        folder_child = excluded.folder_child
+        folder_child = excluded.folder_child,
+        attachments = excluded.attachments
       `,
       [
         email.message_id,
@@ -433,7 +436,8 @@ export async function upsertEmail(email: {
         emailCategory,
         emailSubCategory,
         folderParent,
-        folderChild
+        folderChild,
+        JSON.stringify(email.attachments || [])
       ],
       (err) => {
         if (err) {

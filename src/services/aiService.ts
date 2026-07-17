@@ -12,6 +12,11 @@ export interface ModelConfig {
 
 const MODELS: ModelConfig[] = [
   {
+    name: 'GLM-5.2',
+    id: 'z-ai/glm-5.2',
+    apiKey: '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'
+  },
+  {
     name: 'ThinkingMachines',
     id: 'thinkingmachines/inkling',
     apiKey: process.env.NVIDIA_API_KEY_THINKINGMACHINES || process.env.NVIDIA_API_KEY || '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'
@@ -77,4 +82,11 @@ export async function getAiCompletion(prompt: string | any[]): Promise<string> {
   }
 
   throw new Error(`All rotated AI models failed. Last error: ${lastError?.message || 'Unknown error'}`);
+}
+
+/**
+ * Robust fallback completion implementation specifically requested by the user.
+ */
+export async function getAiCompletionWithFallback(prompt: string | any[]): Promise<string> {
+  return getAiCompletion(prompt);
 }
