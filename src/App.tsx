@@ -71,6 +71,7 @@ interface Email {
   cit_type?: string;
   suggested_bank?: string;
   extracted_notes?: string;
+  ai_status?: string;
 }
 
 interface CustomFilter {
@@ -313,6 +314,11 @@ export default function App() {
     }, 6000);
   };
 
+  const selectedEmailRef = React.useRef(selectedEmail);
+  useEffect(() => {
+    selectedEmailRef.current = selectedEmail;
+  }, [selectedEmail]);
+
   // Connect to SSE Events for Background Auto-Sync Notifications
   useEffect(() => {
     const eventSource = new EventSource('/api/events');
@@ -320,34 +326,39 @@ export default function App() {
     eventSource.onmessage = (event) => {
       try {
         const payload = JSON.parse(event.data);
-        if (payload.event === 'email_synced') {
-          addToast('Email Auto-Synced & Classified', payload.data.message || 'A new ticket has arrived.');
-          
-          if (payload.data && payload.data.email) {
-            const rawEmail = payload.data.email;
+        if (payload.event === 'email_synced' || payload.event === 'email_added') {
+          addToast('Email Terbaca', payload.data.message || 'Email baru telah masuk.');
+          loadEmails();
+        } else if (payload.event === 'email_analyzing') {
+          const targetMsgId = payload.data.message_id;
+          setTickets(prev => prev.map(t => t.message_id === targetMsgId ? { ...t, ai_status: 'ANALYZING' } : t));
+          if (selectedEmailRef.current && selectedEmailRef.current.message_id === targetMsgId) {
+            setSelectedEmail(prev => prev ? { ...prev, ai_status: 'ANALYZING' } : null);
+          }
+        } else if (payload.event === 'email_updated') {
+          const updatedEmail = payload.data.email;
+          if (updatedEmail) {
             let fromName = '';
-            let fromAddress = rawEmail.sender || '';
-            if (rawEmail.sender && rawEmail.sender.includes('<')) {
-              const match = rawEmail.sender.match(/^(.*?)\s*<(.*?)>/);
+            let fromAddress = updatedEmail.sender || '';
+            if (updatedEmail.sender && updatedEmail.sender.includes('<')) {
+              const match = updatedEmail.sender.match(/^(.*?)\s*<(.*?)>/);
               if (match) {
                 fromName = match[1].trim();
                 fromAddress = match[2].trim();
               }
             }
-
-            const newEmail: Email = {
-              ...rawEmail,
+            const mappedEmail = {
+              ...updatedEmail,
               fromName: fromName || fromAddress,
               fromAddress: fromAddress,
-              tags: Array.isArray(rawEmail.tags) ? rawEmail.tags : []
+              tags: Array.isArray(updatedEmail.tags) ? updatedEmail.tags : []
             };
 
-            setTickets(prev => {
-              if (prev.some(t => t.message_id === newEmail.message_id)) {
-                return prev;
-              }
-              return [newEmail, ...prev];
-            });
+            setTickets(prev => prev.map(t => t.message_id === mappedEmail.message_id ? mappedEmail : t));
+            if (selectedEmailRef.current && selectedEmailRef.current.message_id === mappedEmail.message_id) {
+              setSelectedEmail(mappedEmail);
+            }
+            addToast('Analisis AI Selesai', `Analisis untuk email "${mappedEmail.subject}" telah selesai.`);
           } else {
             loadEmails();
           }
@@ -1509,6 +1520,26 @@ export default function App() {
             <section className="flex-1 bg-white flex flex-col overflow-y-auto" id="pane_email_detail">
               {selectedEmail ? (
                 <div className="flex flex-col h-full overflow-y-auto">
+                  
+                  {/* AI Analysis Status Banner */}
+                  {selectedEmail.ai_status === 'ANALYZING' && (
+                    <div className="bg-sky-50 border-b border-sky-100 px-6 py-2.5 flex items-center justify-between shrink-0">
+                      <div className="flex items-center space-x-2 text-sky-700">
+                        <Sparkles className="h-4 w-4 animate-spin shrink-0" />
+                        <span className="text-xs font-semibold">AI Operasional sedang mengekstrak detail CIT/ATM...</span>
+                      </div>
+                      <span className="text-[10px] font-bold text-sky-600 bg-sky-100/80 px-2 py-0.5 rounded-md animate-pulse font-mono">GLM-5.2 ACTIVATED</span>
+                    </div>
+                  )}
+                  {selectedEmail.ai_status === 'FAILED' && (
+                    <div className="bg-rose-50 border-b border-rose-100 px-6 py-2.5 flex items-center justify-between shrink-0">
+                      <div className="flex items-center space-x-2 text-rose-700">
+                        <AlertCircle className="h-4 w-4 shrink-0" />
+                        <span className="text-xs font-semibold">Analisis AI gagal atau mengalami timeout.</span>
+                      </div>
+                      <span className="text-[10px] font-bold text-rose-600 bg-rose-100/80 px-2 py-0.5 rounded-md font-mono">FAILED</span>
+                    </div>
+                  )}
                   
                   {/* Email Detail Header */}
                   <div className="p-6 border-b border-slate-100 bg-slate-50/50 shrink-0">

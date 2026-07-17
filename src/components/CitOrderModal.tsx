@@ -35,6 +35,9 @@ interface Email {
   cit_type?: string;
   suggested_bank?: string;
   extracted_notes?: string;
+  currency?: string;
+  denomination_suggestion?: number;
+  total_amount?: number;
 }
 
 interface CitOrderModalProps {
@@ -50,7 +53,15 @@ interface DenomRow {
   quantity: number;
 }
 
-const STANDARD_DENOMINATIONS = [100000, 50000, 20000, 10000, 5000, 2000, 1000];
+const IDR_DENOMINATIONS = [100000, 50000, 20000, 10000, 5000, 2000, 1000];
+const USD_DENOMINATIONS = [100, 50, 20, 10, 5, 2, 1];
+
+function getDenominationsForCurrency(currencyCode: string): number[] {
+  if (String(currencyCode).toUpperCase() === 'USD') {
+    return USD_DENOMINATIONS;
+  }
+  return IDR_DENOMINATIONS;
+}
 
 export default function CitOrderModal({
   isOpen,
@@ -76,6 +87,13 @@ export default function CitOrderModal({
 
   // Denomination rows state
   const [denomRows, setDenomRows] = useState<DenomRow[]>([]);
+  const [isManualMode, setIsManualMode] = useState(false);
+
+  const currentCurrencyCode = currencies.find(c => String(c.id) === selectedCurrencyId)?.code || 
+                              currencies.find(c => String(c.id) === selectedCurrencyId)?.currency_code || 
+                              'IDR';
+
+  const availableDenoms = getDenominationsForCurrency(currentCurrencyCode);
 
   // Load API metadata (branches, currencies)
   useEffect(() => {
@@ -133,21 +151,27 @@ export default function CitOrderModal({
         setSelectedBranchId(String(branches[0].id));
       }
 
-      // Parse and prefill Amount
-      const amountMatch = (prefillEmail.body_text || '').match(/(?:Amount|Nilai)\s*[:=]\s*([\d,.]+)/i);
-      let parsedAmount = amountMatch ? amountMatch[1].replace(/[,.]/g, '') : '';
-      if (!parsedAmount && prefillEmail.body_text) {
-        // Look for denom clues in extracted_notes or body (e.g. 100k, 50k, total digits)
-        const digitsMatch = prefillEmail.body_text.match(/\b\d{5,10}\b/g);
-        if (digitsMatch && digitsMatch.length > 0) {
-          parsedAmount = digitsMatch[0];
+      // Parse and prefill Amount with AI-extracted total_amount priority
+      let parsedAmount = '';
+      if (prefillEmail.total_amount && Number(prefillEmail.total_amount) > 0) {
+        parsedAmount = String(prefillEmail.total_amount);
+      } else {
+        const amountMatch = (prefillEmail.body_text || '').match(/(?:Amount|Nilai)\s*[:=]\s*([\d,.]+)/i);
+        parsedAmount = amountMatch ? amountMatch[1].replace(/[,.]/g, '') : '';
+        if (!parsedAmount && prefillEmail.body_text) {
+          // Look for denom clues in extracted_notes or body (e.g. 100k, 50k, total digits)
+          const digitsMatch = prefillEmail.body_text.match(/\b\d{5,10}\b/g);
+          if (digitsMatch && digitsMatch.length > 0) {
+            parsedAmount = digitsMatch[0];
+          }
         }
       }
-      setAmount(parsedAmount || '100000000'); // Default fallback amount Rp 100.000.000
+      const finalAmountVal = parsedAmount || (prefillEmail.currency === 'USD' ? '1000' : '100000000');
+      setAmount(finalAmountVal);
 
-      // Parse and prefill Currency
+      // Parse and prefill Currency with AI-extracted currency priority
       const currMatch = (prefillEmail.body_text || '').match(/(?:Currency|Mata\s+Uang|Currency\s+Code)\s*[:=]\s*([a-zA-Z]{3})/i);
-      const extractedCurr = currMatch ? currMatch[1].toUpperCase() : 'IDR';
+      const extractedCurr = (prefillEmail.currency || (currMatch ? currMatch[1].toUpperCase() : 'IDR')).toUpperCase();
       if (extractedCurr && currencies.length > 0) {
         const found = currencies.find(c => 
           (c.code || '').toUpperCase() === extractedCurr || 
@@ -159,25 +183,41 @@ export default function CitOrderModal({
         if (idr) setSelectedCurrencyId(String(idr.id));
       }
 
-      // Dynamically generate default denomination rows based on prefilled notes or body clues!
-      // For example, if notes say "Droping uang 100k dan 50k", pre-add 100000 and 50000 rows
-      const lowercaseNotes = (prefillEmail.extracted_notes || '').toLowerCase() + ' ' + (prefillEmail.body_text || '').toLowerCase();
+      // Dynamically generate default denomination rows
       const rows: DenomRow[] = [];
-      
-      if (lowercaseNotes.includes('100k') || lowercaseNotes.includes('100.000') || lowercaseNotes.includes('100 ribu')) {
-        rows.push({ denomination: 100000, quantity: 1000 }); // e.g. Rp 100.000.000
-      }
-      if (lowercaseNotes.includes('50k') || lowercaseNotes.includes('50.000') || lowercaseNotes.includes('50 ribu')) {
-        rows.push({ denomination: 50000, quantity: 1000 }); // e.g. Rp 50.000.000
-      }
-      if (lowercaseNotes.includes('20k') || lowercaseNotes.includes('20.000') || lowercaseNotes.includes('20 ribu')) {
-        rows.push({ denomination: 20000, quantity: 500 });
+      const activeCurr = prefillEmail.currency || extractedCurr || 'IDR';
+      const availableList = getDenominationsForCurrency(activeCurr);
+
+      if (prefillEmail.denomination_suggestion && Number(prefillEmail.denomination_suggestion) > 0) {
+        const targetAmount = Number(finalAmountVal);
+        const suggestion = Number(prefillEmail.denomination_suggestion);
+        rows.push({
+          denomination: suggestion,
+          quantity: Math.floor(targetAmount / suggestion) || 1
+        });
+      } else {
+        const lowercaseNotes = (prefillEmail.extracted_notes || '').toLowerCase() + ' ' + (prefillEmail.body_text || '').toLowerCase();
+        if (activeCurr.toUpperCase() === 'USD') {
+          if (lowercaseNotes.includes('100 dollar') || lowercaseNotes.includes('100$') || lowercaseNotes.includes('denom 100')) {
+            rows.push({ denomination: 100, quantity: 10 });
+          }
+          if (lowercaseNotes.includes('50 dollar') || lowercaseNotes.includes('50$') || lowercaseNotes.includes('denom 50')) {
+            rows.push({ denomination: 50, quantity: 20 });
+          }
+        } else {
+          if (lowercaseNotes.includes('100k') || lowercaseNotes.includes('100.000') || lowercaseNotes.includes('100 ribu')) {
+            rows.push({ denomination: 100000, quantity: 1000 });
+          }
+          if (lowercaseNotes.includes('50k') || lowercaseNotes.includes('50.000') || lowercaseNotes.includes('50 ribu')) {
+            rows.push({ denomination: 50000, quantity: 1000 });
+          }
+        }
       }
 
       if (rows.length === 0) {
-        // Standard split fallback (e.g. split into 100,000s)
-        const targetAmount = parsedAmount ? Number(parsedAmount) : 100000000;
-        rows.push({ denomination: 100000, quantity: Math.floor(targetAmount / 100000) || 1000 });
+        const defaultDenom = availableList[0] || (activeCurr.toUpperCase() === 'USD' ? 100 : 100000);
+        const targetAmount = Number(finalAmountVal);
+        rows.push({ denomination: defaultDenom, quantity: Math.floor(targetAmount / defaultDenom) || 1 });
       }
       setDenomRows(rows);
     } else if (isOpen) {
@@ -185,6 +225,29 @@ export default function CitOrderModal({
       resetForm();
     }
   }, [isOpen, prefillEmail, branches, currencies]);
+
+  // Update denomination rows when currency changes to prevent cross-currency mismatch
+  useEffect(() => {
+    if (isOpen && selectedCurrencyId && currencies.length > 0) {
+      const activeCurr = currencies.find(c => String(c.id) === selectedCurrencyId)?.code || 
+                         currencies.find(c => String(c.id) === selectedCurrencyId)?.currency_code || 
+                         'IDR';
+      const availableList = getDenominationsForCurrency(activeCurr);
+      
+      setDenomRows(prev => {
+        const isMismatched = prev.some(r => !availableList.includes(r.denomination));
+        if (isMismatched && !isManualMode) {
+          const defaultDenom = availableList[0] || (activeCurr.toUpperCase() === 'USD' ? 100 : 100000);
+          const targetAmount = amount ? Number(amount) : (activeCurr.toUpperCase() === 'USD' ? 1000 : 100000000);
+          return [{
+            denomination: defaultDenom,
+            quantity: Math.floor(targetAmount / defaultDenom) || 1
+          }];
+        }
+        return prev;
+      });
+    }
+  }, [selectedCurrencyId, currencies, isOpen]);
 
   // Recalculate calculated total
   const calculatedTotal = denomRows.reduce((sum, r) => sum + (r.denomination * r.quantity), 0);
@@ -199,10 +262,12 @@ export default function CitOrderModal({
     setSuggestedBank('');
     setExtractedNotes('');
     setDenomRows([{ denomination: 100000, quantity: 1000 }]);
+    setIsManualMode(false);
   };
 
   const addDenomRow = () => {
-    setDenomRows(prev => [...prev, { denomination: 50000, quantity: 100 }]);
+    const defaultDenom = availableDenoms[0] || 50000;
+    setDenomRows(prev => [...prev, { denomination: defaultDenom, quantity: 100 }]);
   };
 
   const removeDenomRow = (index: number) => {
@@ -220,7 +285,7 @@ export default function CitOrderModal({
 
   const handleSyncCalculatedTotal = () => {
     setAmount(String(calculatedTotal));
-    onAddToast('Total Updated', `Total nominal disesuaikan dengan nilai perhitungan pecahan: Rp ${calculatedTotal.toLocaleString('id-ID')}`);
+    onAddToast('Total Nominal Disamakan', `Total nominal disesuaikan dengan nilai perhitungan pecahan: ${currentCurrencyCode} ${calculatedTotal.toLocaleString()}`);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -237,7 +302,7 @@ export default function CitOrderModal({
 
     const emailTotalNum = Number(amount);
     if (calculatedTotal !== emailTotalNum) {
-      if (!confirm(`Peringatan: Total perhitungan pecahan (Rp ${calculatedTotal.toLocaleString('id-ID')}) tidak sesuai dengan Total Nominal Form (Rp ${emailTotalNum.toLocaleString('id-ID')}). Apakah Anda ingin melanjutkan?`)) {
+      if (!confirm(`Peringatan: Total perhitungan pecahan (${currentCurrencyCode} ${calculatedTotal.toLocaleString()}) tidak sesuai dengan Total Nominal Form (${currentCurrencyCode} ${emailTotalNum.toLocaleString()}). Apakah Anda ingin melanjutkan (Manual Override)?`)) {
         return;
       }
     }
@@ -451,16 +516,29 @@ export default function CitOrderModal({
             <div className="flex items-center justify-between mb-3 border-b border-slate-200/60 pb-2">
               <span className="font-bold text-[11px] text-slate-700 flex items-center gap-1.5 uppercase tracking-wider">
                 <Coins className="h-4 w-4 text-amber-500" />
-                Pecahan & Denominasi Dynamic Uang
+                Pecahan & Denominasi Dynamic Uang ({currentCurrencyCode})
               </span>
-              <button
-                type="button"
-                onClick={addDenomRow}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 hover:border-slate-300 text-blue-600 font-bold rounded-lg text-[10px] shadow-xs cursor-pointer transition-colors"
-              >
-                <Plus className="h-3 w-3" />
-                <span>Tambah Baris</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsManualMode(!isManualMode)}
+                  className={`px-3 py-1.5 border rounded-lg text-[10px] font-bold shadow-xs cursor-pointer transition-colors ${
+                    isManualMode 
+                      ? 'bg-amber-100 border-amber-300 text-amber-800' 
+                      : 'bg-white border-slate-200 hover:border-slate-300 text-slate-600'
+                  }`}
+                >
+                  {isManualMode ? 'Mode List Standar' : 'Switch Input Manual'}
+                </button>
+                <button
+                  type="button"
+                  onClick={addDenomRow}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 hover:border-slate-300 text-blue-600 font-bold rounded-lg text-[10px] shadow-xs cursor-pointer transition-colors"
+                >
+                  <Plus className="h-3 w-3" />
+                  <span>Tambah Baris</span>
+                </button>
+              </div>
             </div>
 
             {denomRows.length === 0 ? (
@@ -471,20 +549,37 @@ export default function CitOrderModal({
               <div className="space-y-2 mb-3">
                 {denomRows.map((row, index) => (
                   <div key={index} className="grid grid-cols-12 gap-3 items-center bg-white p-2.5 rounded-lg border border-slate-200/85 shadow-xs">
-                    {/* Select Denomination */}
+                    {/* Manual or Select Denomination */}
                     <div className="col-span-4">
-                      <select
-                        value={row.denomination}
-                        onChange={(e) => handleDenomChange(index, 'denomination', Number(e.target.value))}
-                        className="w-full p-2 bg-slate-50 border border-slate-200 focus:border-blue-500 rounded-md outline-none font-bold"
-                      >
-                        {STANDARD_DENOMINATIONS.map(d => (
-                          <option key={d} value={d}>Rp {d.toLocaleString('id-ID')}</option>
-                        ))}
-                        {!STANDARD_DENOMINATIONS.includes(row.denomination) && (
-                          <option value={row.denomination}>Rp {row.denomination.toLocaleString('id-ID')}</option>
-                        )}
-                      </select>
+                      {isManualMode ? (
+                        <div className="relative">
+                          <span className="absolute left-2.5 top-2 text-[10px] text-slate-400 font-bold">{currentCurrencyCode}</span>
+                          <input
+                            type="number"
+                            value={row.denomination}
+                            onChange={(e) => handleDenomChange(index, 'denomination', Number(e.target.value))}
+                            placeholder="Nominal"
+                            className="w-full p-2 pl-10 bg-slate-50 border border-slate-200 focus:border-blue-500 rounded-md outline-none font-bold"
+                          />
+                        </div>
+                      ) : (
+                        <select
+                          value={row.denomination}
+                          onChange={(e) => handleDenomChange(index, 'denomination', Number(e.target.value))}
+                          className="w-full p-2 bg-slate-50 border border-slate-200 focus:border-blue-500 rounded-md outline-none font-bold"
+                        >
+                          {availableDenoms.map(d => (
+                            <option key={d} value={d}>
+                              {currentCurrencyCode} {d.toLocaleString()}
+                            </option>
+                          ))}
+                          {!availableDenoms.includes(row.denomination) && (
+                            <option value={row.denomination}>
+                              {currentCurrencyCode} {row.denomination.toLocaleString()}
+                            </option>
+                          )}
+                        </select>
+                      )}
                     </div>
 
                     {/* Quantity (Lembar) */}
@@ -507,7 +602,7 @@ export default function CitOrderModal({
 
                     {/* Calculated Subtotal */}
                     <div className="col-span-3 font-mono font-bold text-slate-900 text-right pr-2">
-                      Rp {(row.denomination * row.quantity).toLocaleString('id-ID')}
+                      {currentCurrencyCode} {(row.denomination * row.quantity).toLocaleString()}
                     </div>
 
                     {/* Delete button */}
@@ -531,7 +626,7 @@ export default function CitOrderModal({
               <div className="text-left">
                 <p className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Total Hasil Hitung Pecahan</p>
                 <p className="text-lg font-black text-blue-600 font-mono mt-0.5">
-                  Rp {calculatedTotal.toLocaleString('id-ID')}
+                  {currentCurrencyCode} {calculatedTotal.toLocaleString()}
                 </p>
               </div>
 
@@ -547,7 +642,7 @@ export default function CitOrderModal({
                     <div className="bg-amber-50 text-amber-800 border border-amber-200 rounded-lg p-1.5 px-3 flex items-center gap-1.5 font-medium text-[10px]">
                       <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 animate-pulse" />
                       <div>
-                        <span>Selisih: Rp {totalDiff.toLocaleString('id-ID')}</span>
+                        <span>Selisih: {currentCurrencyCode} {totalDiff.toLocaleString()}</span>
                         <span className="block text-[9px] text-amber-600 font-normal">
                           {totalDiff > 0 ? 'Pecahan kurang' : 'Pecahan berlebih'}
                         </span>
@@ -604,6 +699,21 @@ export default function CitOrderModal({
               />
             </div>
           </div>
+
+          {totalDiff !== 0 && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 px-4 text-[11px] text-amber-800 flex items-start gap-2.5 animate-pulse">
+              <AlertTriangle className="h-4.5 w-4.5 text-amber-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold">Peringatan Selisih Nominal!</p>
+                <p className="text-slate-600 mt-0.5">
+                  Total nominal form ({currentCurrencyCode} {Number(amount || 0).toLocaleString()}) tidak sama dengan hasil hitung pecahan ({currentCurrencyCode} {calculatedTotal.toLocaleString()}).
+                </p>
+                <p className="text-[10px] text-amber-700 font-semibold mt-1">
+                  * Operator diperbolehkan menekan tombol submit di bawah untuk melakukan Manual Override dan tetap mengirim order.
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* Action buttons */}
           <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-2.5 font-sans">

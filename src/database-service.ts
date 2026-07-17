@@ -41,6 +41,10 @@ export interface Email {
   cit_type?: string;
   suggested_bank?: string;
   extracted_notes?: string;
+  currency?: string;
+  denomination_suggestion?: number;
+  total_amount?: number;
+  ai_status?: string;
 }
 
 export interface CustomFilter {
@@ -189,6 +193,19 @@ export async function initDatabaseService(): Promise<void> {
       db.run('ALTER TABLE emails ADD COLUMN cit_type TEXT', () => {});
       db.run('ALTER TABLE emails ADD COLUMN suggested_bank TEXT', () => {});
       db.run('ALTER TABLE emails ADD COLUMN extracted_notes TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN currency TEXT DEFAULT "IDR"', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN denomination_suggestion INTEGER', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN total_amount INTEGER', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN ai_status TEXT DEFAULT "PENDING"', () => {});
+
+      // Initialize real-time listener in a non-blocking way
+      setTimeout(() => {
+        try {
+          initSupabaseRealtime();
+        } catch (rtErr) {
+          console.error('[Database Service] Failed to initialize Supabase Realtime channel:', rtErr);
+        }
+      }, 1000);
 
       resolve();
     });
@@ -236,7 +253,11 @@ export async function dbGetAllEmails(): Promise<Email[]> {
           is_cit_order: row.is_cit_order === true || row.is_cit_order === 1,
           cit_type: row.cit_type || 'None',
           suggested_bank: row.suggested_bank || '',
-          extracted_notes: row.extracted_notes || ''
+          extracted_notes: row.extracted_notes || '',
+          currency: row.currency || 'IDR',
+          denomination_suggestion: row.denomination_suggestion !== undefined && row.denomination_suggestion !== null ? Number(row.denomination_suggestion) : undefined,
+          total_amount: row.total_amount !== undefined && row.total_amount !== null ? Number(row.total_amount) : undefined,
+          ai_status: row.ai_status || 'PENDING'
         }));
       }
       console.warn('Supabase emails query failed, falling back to SQLite:', error);
@@ -289,7 +310,11 @@ export async function dbGetAllEmails(): Promise<Email[]> {
           is_cit_order: row.is_cit_order === 1,
           cit_type: row.cit_type || 'None',
           suggested_bank: row.suggested_bank || '',
-          extracted_notes: row.extracted_notes || ''
+          extracted_notes: row.extracted_notes || '',
+          currency: row.currency || 'IDR',
+          denomination_suggestion: row.denomination_suggestion !== undefined && row.denomination_suggestion !== null ? Number(row.denomination_suggestion) : undefined,
+          total_amount: row.total_amount !== undefined && row.total_amount !== null ? Number(row.total_amount) : undefined,
+          ai_status: row.ai_status || 'PENDING'
         };
       });
       resolve(mapped);
@@ -453,6 +478,9 @@ export async function processEmailWithNvidia(
   cit_type: string;
   suggested_bank: string;
   extracted_notes: string;
+  currency?: string;
+  denomination_suggestion?: number;
+  total_amount?: number;
 }> {
   const attachmentListStr = Array.isArray(attachments) && attachments.length > 0
     ? attachments.map(att => `${att.filename || 'File'} (${att.contentType || 'unknown'}, ${att.size || 0} bytes)`).join('\n')
@@ -461,12 +489,12 @@ export async function processEmailWithNvidia(
   const messages = [
     {
       role: "system",
-      content: `Anda adalah AI Asisten Operasional Ticketing. Tugas Anda adalah menganalisis data email mentah (Raw Data) yang mencakup isi pesan, riwayat percakapan (reply thread), dan daftar lampiran.
+      content: `Anda adalah AI Asisten Operasional Ticketing dan Dispatch. Tugas Anda adalah menganalisis data email mentah (Raw Data) yang mencakup isi pesan, riwayat percakapan (reply thread), dan daftar lampiran.
 
 INSTRUKSI ANALISIS:
 1. FULL THREAD ANALYSIS: Baca email secara utuh dari atas sampai bawah. Deteksi riwayat percakapan sebelumnya (reply) untuk memahami konteks masalah.
 2. DETEKSI ATTACHMENT: Analisis daftar lampiran yang diberikan. Jika ada file seperti "Bon", "Bukti", "Foto", "Surat", atau "Form", identifikasikan sebagai bagian dari bukti operasional.
-3. KLASIFIKASI CIT/ATM:
+3. KLASIFIKASI CIT/ATM & EKSTRAKSI DETAIL:
    - Jika email berisi instruksi uang/CIT/ATM, deteksi lokasi, nominal, dan tanggal yang disebutkan di dalam thread percakapan.
    - Set 'is_cit_order': true jika ada instruksi operasional.
    - Set 'suggested_tag' menjadi "CIT" atau "ATM" jika terkait. Jika tidak terkait CIT/ATM, set menjadi "Lainnya".
@@ -478,8 +506,12 @@ INSTRUKSI ANALISIS:
      - REGION 5 -> SEMARANG, SOLO, TEGAL, YOGYAKARTA, PURWOKERTO, KUDUS
      - REGION 6 -> MAKASSAR, KEDIRI, JEMBER, SURABAYA, MALANG
      - REGION 10 -> BENGKULU (Jika subject mengandung "ADV Bengkulu")
+   - Tentukan 'currency': "USD" atau "IDR". Jika tidak eksplisit, asumsikan "IDR".
+   - Identifikasi 'denomination_suggestion' (dalam lembar rupiah/dollar): Jika email menyebutkan "Denom 100" atau "Pecahan 100k", masukkan angka "100000". Jika menyebut "Denom 50k" atau "Pecahan 50rb", masukkan "50000". Masukkan sebagai angka murni (integer).
+   - Identifikasi 'total_amount' (total nilai uang murni, e.g., 100000000 untuk 100 juta).
+   - Identifikasi 'bank_tujuan' (e.g. MAYBANK, BCA, MANDIRI).
 
-4. FORMAT OUTPUT HARUS JSON MURNI TANPA MARKDOWN DAN TANPA TEKS PEMBUKA.
+4. FORMAT OUTPUT HARUS JSON MURNI TANPA MARKDOWN DAN TANPA TEKS PEMBUKA. Berikan jawaban dalam format JSON murni. Jangan tambahkan kata pengantar atau penjelasan tambahan. Fokus pada: summary, urgency_level, is_cit_order, cit_type, dan extracted_notes.
 
 CONTOH FORMAT OUTPUT (JSON):
 {
@@ -492,7 +524,10 @@ CONTOH FORMAT OUTPUT (JSON):
   "suggested_folder_parent": "REGION 1",
   "suggested_folder_child": "MEDAN",
   "suggested_bank": "BCA",
-  "extracted_notes": "Instruksi khusus atau catatan operasional penting."
+  "extracted_notes": "Instruksi khusus atau catatan operasional penting.",
+  "currency": "IDR",
+  "denomination_suggestion": 100000,
+  "total_amount": 100000000
 }`
     },
     {
@@ -545,6 +580,35 @@ ${attachmentListStr}`
       finalNotes = `Lampiran Terdeteksi: ${parsed.detected_attachments.join(", ")}\n${finalNotes}`;
     }
 
+    // Handle extraction details
+    let currencyVal = parsed.currency ? String(parsed.currency).toUpperCase() : "IDR";
+    if (currencyVal !== "USD" && currencyVal !== "IDR") {
+      currencyVal = "IDR";
+    }
+
+    let denomSuggestion: number | undefined = undefined;
+    if (parsed.denomination_suggestion !== undefined && parsed.denomination_suggestion !== null) {
+      const num = Number(parsed.denomination_suggestion);
+      if (!isNaN(num) && num > 0) {
+        // Handle shorthand e.g. "100" for 100000 or "50" for 50000
+        if (num === 100 && currencyVal === "IDR") {
+          denomSuggestion = 100000;
+        } else if (num === 50 && currencyVal === "IDR") {
+          denomSuggestion = 50000;
+        } else {
+          denomSuggestion = num;
+        }
+      }
+    }
+
+    let totalAmountVal: number | undefined = undefined;
+    if (parsed.total_amount !== undefined && parsed.total_amount !== null) {
+      const num = Number(parsed.total_amount);
+      if (!isNaN(num) && num > 0) {
+        totalAmountVal = num;
+      }
+    }
+
     return {
       summary: parsed.summary !== undefined ? String(parsed.summary) : "",
       action_required: parsed.action_required === true || parsed.action_required === "true",
@@ -555,7 +619,10 @@ ${attachmentListStr}`
       is_cit_order: isCit,
       cit_type: citType,
       suggested_bank: parsed.suggested_bank !== undefined ? String(parsed.suggested_bank) : "",
-      extracted_notes: finalNotes.trim()
+      extracted_notes: finalNotes.trim(),
+      currency: currencyVal,
+      denomination_suggestion: denomSuggestion,
+      total_amount: totalAmountVal
     };
   } catch (err: any) {
     console.error('[AI Copilot] All rotated models failed or JSON parse error. Falling back to default values. Error:', err.message || String(err));
@@ -570,83 +637,256 @@ ${attachmentListStr}`
       is_cit_order: false,
       cit_type: "None",
       suggested_bank: "",
-      extracted_notes: ""
+      extracted_notes: "",
+      currency: "IDR"
     };
   }
 }
 
+let dbBroadcasterFn: ((event: string, data: any) => void) | null = null;
+
+export function registerDbBroadcaster(fn: (event: string, data: any) => void) {
+  dbBroadcasterFn = fn;
+}
+
 /**
  * Synchronizes and analyzes emails using NVIDIA API and saves/upserts to Supabase + SQLite
+ * In the new event-driven / asynchronous flow, this function immediately upserts the email
+ * as PENDING, and then asynchronously triggers analyzeEmail(emailId).
  */
 export async function syncAndAnalyzeEmail(email: Email): Promise<void> {
-  let summary = "";
-  let action_required = false;
-  let urgency_level = "Routine";
-  let suggested_tag = "Informasi";
-  let suggested_folder_parent = "Operation";
-  let suggested_folder_child = "General";
-  let is_cit_order = false;
-  let cit_type = "None";
-  let suggested_bank = "";
-  let extracted_notes = "";
-
-  try {
-    console.log(`Memproses summary untuk email: [${email.subject || '(No Subject)'}]`);
-    const aiResult = await processEmailWithNvidia(email.subject || "", email.body_text || "", email.attachments);
-    summary = aiResult.summary || `Email from ${email.sender} regarding ${email.subject}.`;
-    action_required = !!aiResult.action_required;
-    urgency_level = aiResult.urgency_level || "Routine";
-    suggested_tag = aiResult.suggested_tag || "Informasi";
-    suggested_folder_parent = aiResult.suggested_folder_parent || "Operation";
-    suggested_folder_child = aiResult.suggested_folder_child || "General";
-    is_cit_order = !!aiResult.is_cit_order;
-    cit_type = aiResult.cit_type || "None";
-    suggested_bank = aiResult.suggested_bank || "";
-    extracted_notes = aiResult.extracted_notes || "";
-
-    // 4. TAMPILAN TERMINAL:
-    // Saat AI selesai memproses email, tampilkan log:
-    // "[AI Copilot] Email processed: [Subject Email] | Category: [Hasil AI]"
-    console.log(`[AI Copilot] Email processed: ${email.subject} | Category: ${urgency_level}`);
-  } catch (err: any) {
-    // 3. ERROR HANDLING & LOGGING:
-    // Jika NVIDIA API gagal (misalnya rate limit), berikan pesan log di terminal bahwa AI sedang tidak tersedia 
-    // dan tetap masukkan email ke database dengan status action_required: false agar aplikasi tidak berhenti.
-    console.log('[AI Copilot] AI sedang tidak tersedia');
-    
-    // Fallback: rule-based summary but action_required: false
-    const fallbackInfo = ruleBasedFallback(email.subject, email.body_text || "");
-    summary = fallbackInfo.summary || `Email from ${email.sender}.`;
-    action_required = false;
-    urgency_level = "Routine";
-    suggested_tag = "Informasi";
-    suggested_folder_parent = "Operation";
-    suggested_folder_child = "General";
-    is_cit_order = false;
-    cit_type = "None";
-    suggested_bank = "";
-    extracted_notes = "";
-  }
-
-  // Combine results and ensure no undefined values are written
-  const analyzedEmail: Email = {
+  const initialEmail: Email = {
     ...email,
-    summary,
-    action_required,
-    urgency_level,
-    tag_type: suggested_tag,
-    suggested_tag,
-    suggested_folder_parent,
-    suggested_folder_child,
-    is_cit_order,
-    cit_type,
-    suggested_bank,
-    extracted_notes,
-    is_important: urgency_level === 'High' || urgency_level === 'Peringatan'
+    ai_status: email.ai_status || 'PENDING',
+    summary: email.summary || 'Belum dianalisis (Menunggu AI...)',
+    action_required: email.action_required !== undefined ? email.action_required : false,
+    urgency_level: email.urgency_level || 'Routine',
+    suggested_tag: email.suggested_tag || 'Informasi',
+    is_cit_order: email.is_cit_order !== undefined ? email.is_cit_order : false,
+    cit_type: email.cit_type || 'None',
+    suggested_bank: email.suggested_bank || '',
+    extracted_notes: email.extracted_notes || '',
+    currency: email.currency || 'IDR'
   };
 
-  // Upsert to SQLite and Supabase using existing robust pipeline
-  await dbUpsertEmail(analyzedEmail);
+  // 1. Immediately insert/upsert the email to SQLite & Supabase
+  await dbUpsertEmail(initialEmail);
+
+  // Trigger frontend to show loading/pending status
+  if (dbBroadcasterFn) {
+    dbBroadcasterFn('email_added', {
+      email: initialEmail,
+      message: `Email "${initialEmail.subject}" added with PENDING AI status.`
+    });
+  }
+
+  // 2. Start the AI analysis asynchronously (non-blocking)
+  analyzeEmail(email.message_id).catch(err => {
+    console.error(`[Async AI Worker] Error running analyzeEmail for ${email.message_id}:`, err);
+  });
+}
+
+/**
+ * Asynchronously analyzes a specific email and updates its status in the DB
+ */
+export async function analyzeEmail(messageId: string): Promise<void> {
+  try {
+    // Check if email exists
+    const email = await dbGetEmailByMessageId(messageId);
+    if (!email) {
+      console.warn(`[Async AI] Email with message_id ${messageId} not found in database.`);
+      return;
+    }
+
+    // Move to ANALYZING state
+    console.log(`[Async AI] Memproses email: "${email.subject}" (${messageId})`);
+    await dbUpdateEmailFields(messageId, { ai_status: 'ANALYZING' });
+
+    // Notify frontend of status change
+    if (dbBroadcasterFn) {
+      dbBroadcasterFn('email_analyzing', {
+        message_id: messageId,
+        subject: email.subject,
+        ai_status: 'ANALYZING'
+      });
+    }
+
+    let summary = "";
+    let action_required = false;
+    let urgency_level = "Routine";
+    let suggested_tag = "Informasi";
+    let suggested_folder_parent = "Operation";
+    let suggested_folder_child = "General";
+    let is_cit_order = false;
+    let cit_type = "None";
+    let suggested_bank = "";
+    let extracted_notes = "";
+    let currency = "IDR";
+    let denomination_suggestion: number | undefined = undefined;
+    let total_amount: number | undefined = undefined;
+
+    try {
+      const aiResult = await processEmailWithNvidia(email.subject || "", email.body_text || "", email.attachments);
+      
+      summary = aiResult.summary || `Email from ${email.sender} regarding ${email.subject}.`;
+      action_required = !!aiResult.action_required;
+      urgency_level = aiResult.urgency_level || "Routine";
+      suggested_tag = aiResult.suggested_tag || "Informasi";
+      suggested_folder_parent = aiResult.suggested_folder_parent || "Operation";
+      suggested_folder_child = aiResult.suggested_folder_child || "General";
+      is_cit_order = !!aiResult.is_cit_order;
+      cit_type = aiResult.cit_type || "None";
+      suggested_bank = aiResult.suggested_bank || "";
+      extracted_notes = aiResult.extracted_notes || "";
+      currency = aiResult.currency || "IDR";
+      denomination_suggestion = aiResult.denomination_suggestion;
+      total_amount = aiResult.total_amount;
+
+      console.log(`[AI Copilot] Email processed: ${email.subject} | Category: ${urgency_level}`);
+
+      // Update to COMPLETED
+      await dbUpdateEmailFields(messageId, {
+        summary,
+        action_required,
+        urgency_level,
+        suggested_tag,
+        is_important: urgency_level === 'High' || urgency_level === 'Peringatan',
+        folder_parent: suggested_folder_parent,
+        folder_child: suggested_folder_child,
+        is_cit_order,
+        cit_type,
+        suggested_bank,
+        extracted_notes,
+        currency,
+        denomination_suggestion,
+        total_amount,
+        ai_status: 'COMPLETED'
+      });
+    } catch (aiError) {
+      console.log('[AI Copilot] AI sedang tidak tersedia, falling back to rule-based...', aiError);
+      
+      // Fallback: rule-based summary but action_required: false and ai_status: FAILED
+      const fallbackInfo = ruleBasedFallback(email.subject, email.body_text || "");
+      summary = fallbackInfo.summary || `Email from ${email.sender}.`;
+      action_required = false;
+      urgency_level = "Routine";
+      suggested_tag = "Informasi";
+      suggested_folder_parent = "Operation";
+      suggested_folder_child = "General";
+      is_cit_order = false;
+      cit_type = "None";
+      suggested_bank = "";
+      extracted_notes = "";
+      currency = "IDR";
+
+      await dbUpdateEmailFields(messageId, {
+        summary,
+        action_required,
+        urgency_level,
+        suggested_tag,
+        is_important: false,
+        folder_parent: suggested_folder_parent,
+        folder_child: suggested_folder_child,
+        is_cit_order,
+        cit_type,
+        suggested_bank,
+        extracted_notes,
+        currency,
+        ai_status: 'FAILED'
+      });
+    }
+
+    // Fetch final email data to broadcast to frontend
+    const finalEmail = await dbGetEmailByMessageId(messageId);
+    if (finalEmail && dbBroadcasterFn) {
+      dbBroadcasterFn('email_updated', {
+        email: finalEmail,
+        message: `Email "${finalEmail.subject}" successfully updated by AI.`
+      });
+    }
+  } catch (err) {
+    console.error(`[Async AI] Fatal error running analyzeEmail for ${messageId}:`, err);
+    await dbUpdateEmailFields(messageId, { ai_status: 'FAILED' }).catch(() => {});
+  }
+}
+
+/**
+ * Main worker queue that processes up to 5 pending emails in parallel with Promise.all
+ */
+export async function processEmailQueue(): Promise<void> {
+  const supabase = getSupabaseClient();
+  let pendingEmails: Email[] = [];
+
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('emails')
+        .select('*')
+        .eq('ai_status', 'PENDING')
+        .limit(5);
+      
+      if (!error && data) {
+        pendingEmails = data;
+      }
+    } catch (e) {
+      console.error('[Queue Worker] Error fetching pending emails from Supabase:', e);
+    }
+  }
+
+  // Fallback to SQLite if Supabase returns nothing or is inactive
+  if (pendingEmails.length === 0) {
+    const db = getSqliteDb();
+    pendingEmails = await new Promise((resolve) => {
+      db.all(
+        "SELECT * FROM emails WHERE ai_status = 'PENDING' LIMIT 5",
+        [],
+        (err, rows: any[]) => {
+          if (err) resolve([]);
+          resolve(rows || []);
+        }
+      );
+    });
+  }
+
+  if (pendingEmails.length === 0) {
+    return;
+  }
+
+  console.log(`[Queue Worker] Processing ${pendingEmails.length} pending emails in parallel...`);
+
+  await Promise.all(pendingEmails.map(async (email) => {
+    await analyzeEmail(email.message_id);
+  }));
+}
+
+/**
+ * Retrieve a single email by its message_id from SQLite
+ */
+export async function dbGetEmailByMessageId(messageId: string): Promise<Email | null> {
+  const db = getSqliteDb();
+  return new Promise((resolve) => {
+    db.get('SELECT * FROM emails WHERE message_id = ?', [messageId], (err, row: any) => {
+      if (row) {
+        let parsedTags: string[] = [];
+        try {
+          parsedTags = JSON.parse(row.tags || '[]');
+        } catch {
+          parsedTags = row.tags ? row.tags.split(',') : [];
+        }
+        resolve({
+          ...row,
+          tags: parsedTags,
+          attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || []),
+          is_read: row.is_read === 1,
+          action_required: row.action_required === 1,
+          is_important: row.is_important === 1,
+          is_cit_order: row.is_cit_order === 1,
+        });
+      } else {
+        resolve(null);
+      }
+    });
+  });
 }
 
 // Upsert Email in SQLite and Supabase with AI-driven tagging and summary analysis
@@ -705,10 +945,13 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
   let extractedNotes = email.extracted_notes !== undefined && email.extracted_notes !== null ? email.extracted_notes : '';
   let tags = email.tags || [];
   let isRead = email.is_read !== undefined ? email.is_read : false;
+  let currency = email.currency || 'IDR';
+  let denominationSuggestion = email.denomination_suggestion;
+  let totalAmount = email.total_amount;
 
   const db = getSqliteDb();
   const existing: any = await new Promise((resolve) => {
-    db.get('SELECT is_read, tag_type, summary, action_required, suggested_tag, is_important, tags, urgency_level, suggested_folder_parent, suggested_folder_child, is_cit_order, cit_type, suggested_bank, extracted_notes FROM emails WHERE message_id = ?', [email.message_id], (err, row) => {
+    db.get('SELECT is_read, tag_type, summary, action_required, suggested_tag, is_important, tags, urgency_level, suggested_folder_parent, suggested_folder_child, is_cit_order, cit_type, suggested_bank, extracted_notes, currency, denomination_suggestion, total_amount FROM emails WHERE message_id = ?', [email.message_id], (err, row) => {
       resolve(row || null);
     });
   });
@@ -727,6 +970,9 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
     if (email.cit_type === undefined) citType = existing.cit_type || 'None';
     if (email.suggested_bank === undefined) suggestedBank = existing.suggested_bank !== undefined ? existing.suggested_bank : '';
     if (email.extracted_notes === undefined) extractedNotes = existing.extracted_notes !== undefined ? existing.extracted_notes : '';
+    if (email.currency === undefined || email.currency === 'IDR') currency = existing.currency || 'IDR';
+    if (email.denomination_suggestion === undefined) denominationSuggestion = existing.denomination_suggestion;
+    if (email.total_amount === undefined) totalAmount = existing.total_amount;
     try {
       if (tags.length === 0 && existing.tags) {
         tags = JSON.parse(existing.tags);
@@ -764,7 +1010,8 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
     folder_parent: folderParent,
     folder_child: folderChild,
     api_workflow_status: email.api_workflow_status || 'pending',
-    api_workflow_log: email.api_workflow_log || ''
+    api_workflow_log: email.api_workflow_log || '',
+    ai_status: email.ai_status || 'PENDING'
   };
 
   // Upsert to SQLite
@@ -776,9 +1023,9 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
         category, sub_category, folder_parent, folder_child, api_workflow_status, api_workflow_log,
         is_read, tag_type, summary, action_required, suggested_tag, is_important, urgency_level,
         suggested_folder_parent, suggested_folder_child, is_cit_order, cit_type, suggested_bank, extracted_notes,
-        attachments
+        attachments, currency, denomination_suggestion, total_amount, ai_status
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(message_id) DO UPDATE SET
         subject = excluded.subject,
         sender = excluded.sender,
@@ -806,7 +1053,11 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
         cit_type = excluded.cit_type,
         suggested_bank = excluded.suggested_bank,
         extracted_notes = excluded.extracted_notes,
-        attachments = excluded.attachments
+        attachments = excluded.attachments,
+        currency = excluded.currency,
+        denomination_suggestion = excluded.denomination_suggestion,
+        total_amount = excluded.total_amount,
+        ai_status = excluded.ai_status
       `,
       [
         normalizedEmail.message_id,
@@ -836,7 +1087,11 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
         citType || 'None',
         suggestedBank || '',
         extractedNotes || '',
-        JSON.stringify(normalizedEmail.attachments || [])
+        JSON.stringify(normalizedEmail.attachments || []),
+        currency || 'IDR',
+        denominationSuggestion !== undefined ? denominationSuggestion : null,
+        totalAmount !== undefined ? totalAmount : null,
+        normalizedEmail.ai_status || 'PENDING'
       ],
       (err) => {
         if (err) return reject(err);
@@ -887,7 +1142,11 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
         is_cit_order: !!isCitOrder,
         cit_type: citType || 'None',
         suggested_bank: suggestedBank || '',
-        extracted_notes: extractedNotes || ''
+        extracted_notes: extractedNotes || '',
+        currency: currency || 'IDR',
+        denomination_suggestion: denominationSuggestion !== undefined ? denominationSuggestion : null,
+        total_amount: totalAmount !== undefined ? totalAmount : null,
+        ai_status: normalizedEmail.ai_status || 'PENDING'
       };
 
       const { error } = await supabase.from('emails').upsert(payload, { onConflict: 'message_id' });
@@ -1135,6 +1394,10 @@ export async function dbUpdateEmailFields(
     cit_type?: string;
     suggested_bank?: string;
     extracted_notes?: string;
+    ai_status?: string;
+    currency?: string;
+    denomination_suggestion?: number;
+    total_amount?: number;
   }
 ): Promise<void> {
   // SQLite update
@@ -1154,6 +1417,10 @@ export async function dbUpdateEmailFields(
   if (fields.cit_type !== undefined) { sets.push('cit_type = ?'); params.push(fields.cit_type); }
   if (fields.suggested_bank !== undefined) { sets.push('suggested_bank = ?'); params.push(fields.suggested_bank); }
   if (fields.extracted_notes !== undefined) { sets.push('extracted_notes = ?'); params.push(fields.extracted_notes); }
+  if (fields.ai_status !== undefined) { sets.push('ai_status = ?'); params.push(fields.ai_status); }
+  if (fields.currency !== undefined) { sets.push('currency = ?'); params.push(fields.currency); }
+  if (fields.denomination_suggestion !== undefined) { sets.push('denomination_suggestion = ?'); params.push(fields.denomination_suggestion); }
+  if (fields.total_amount !== undefined) { sets.push('total_amount = ?'); params.push(fields.total_amount); }
   
   if (sets.length > 0) {
     params.push(message_id);
@@ -1185,6 +1452,10 @@ export async function dbUpdateEmailFields(
       if (fields.cit_type !== undefined) updatePayload.cit_type = fields.cit_type;
       if (fields.suggested_bank !== undefined) updatePayload.suggested_bank = fields.suggested_bank;
       if (fields.extracted_notes !== undefined) updatePayload.extracted_notes = fields.extracted_notes;
+      if (fields.ai_status !== undefined) updatePayload.ai_status = fields.ai_status;
+      if (fields.currency !== undefined) updatePayload.currency = fields.currency;
+      if (fields.denomination_suggestion !== undefined) updatePayload.denomination_suggestion = fields.denomination_suggestion;
+      if (fields.total_amount !== undefined) updatePayload.total_amount = fields.total_amount;
       
       if (Object.keys(updatePayload).length > 0) {
         const { error } = await supabase
@@ -1289,5 +1560,44 @@ export async function dbRunHistoricalBackfill(): Promise<{ processedCount: numbe
   }
 
   return { processedCount, failedCount, skippedCount };
+}
+
+/**
+ * Initializes postgres_changes realtime subscription for the emails table
+ */
+export function initSupabaseRealtime() {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    console.log('[Supabase Realtime] Supabase is not active/configured. Realtime channel not started.');
+    return;
+  }
+
+  console.log('[Supabase Realtime] Initializing event-driven Supabase real-time listener...');
+
+  const channel = supabase
+    .channel('public:emails')
+    .on(
+      'postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'emails' },
+      async (payload) => {
+        console.log('[Supabase Realtime] New email detected via postgres_changes INSERT event:', payload);
+        const newEmail = payload.new;
+        if (newEmail && newEmail.message_id) {
+          // Verify if it is still pending or if it has not been analyzed
+          const emailInDb = await dbGetEmailByMessageId(newEmail.message_id);
+          if (emailInDb && (emailInDb.ai_status === 'PENDING' || !emailInDb.ai_status)) {
+            console.log(`[Supabase Realtime] Triggering async AI analysis for message: ${newEmail.subject}`);
+            analyzeEmail(newEmail.message_id).catch(err => {
+              console.error(`[Supabase Realtime] Error analyzing email ${newEmail.message_id}:`, err);
+            });
+          } else {
+            console.log(`[Supabase Realtime] Email ${newEmail.message_id} is already in status: ${emailInDb?.ai_status || 'analyzed'}. Skipping duplicate trigger.`);
+          }
+        }
+      }
+    )
+    .subscribe((status) => {
+      console.log(`[Supabase Realtime] Subscription status: ${status}`);
+    });
 }
 

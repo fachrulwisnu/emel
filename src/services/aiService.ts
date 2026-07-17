@@ -14,21 +14,16 @@ const MODELS: ModelConfig[] = [
   {
     name: 'GLM-5.2',
     id: 'z-ai/glm-5.2',
-    apiKey: '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'
-  },
-  {
-    name: 'ThinkingMachines',
-    id: 'thinkingmachines/inkling',
-    apiKey: process.env.NVIDIA_API_KEY_THINKINGMACHINES || process.env.NVIDIA_API_KEY || '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'
+    apiKey: process.env.NVIDIA_API_KEY_GLM || process.env.NVIDIA_API_KEY || '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'
   },
   {
     name: 'Nemotron',
-    id: 'nvidia/llama-3.1-nemotron-70b-instruct',
+    id: 'nvidia/nemotron-340b-instruct',
     apiKey: process.env.NVIDIA_API_KEY_NEMOTRON || process.env.NVIDIA_API_KEY || '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'
   },
   {
     name: 'Gemma',
-    id: 'google/gemma-2-9b-it',
+    id: 'google/gemma-2-27b-it',
     apiKey: process.env.NVIDIA_API_KEY_GEMMA || process.env.NVIDIA_API_KEY || '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'
   }
 ];

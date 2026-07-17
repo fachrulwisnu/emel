@@ -11,7 +11,8 @@ import {
   dbMarkEmailAsRead,
   dbUpdateEmailFields,
   dbSaveCustomFilter,
-  dbRunHistoricalBackfill
+  dbRunHistoricalBackfill,
+  registerDbBroadcaster
 } from "./src/database-service";
 import { 
   performBackgroundSync, 
@@ -55,6 +56,7 @@ async function startServer() {
 
   // Register real-time updater
   registerBroadcaster(broadcastEvent);
+  registerDbBroadcaster(broadcastEvent);
 
   // Enable JSON request parsing
   app.use(express.json({ limit: '50mb' }));
@@ -308,6 +310,46 @@ async function startServer() {
           { id: 2, order_id: "ORD-1003", ticket_id: "TKT-0413", branch_name: "PURWOKERTO", location: "Bank Mandiri Purwokerto", status: "Idle" },
           { id: 3, order_id: "ORD-1004", ticket_id: "TKT-0414", branch_name: "SURABAYA", location: "BCA Surabaya", status: "Completed" }
         ]
+      });
+    }
+  });
+
+  app.get("/api/cit/test-connection", async (req, res) => {
+    const steps: string[] = [];
+    try {
+      const settings = getAppSettings();
+      const token = settings.citApiToken || process.env.CIT_API_TOKEN || '';
+      const headers = { 'Authorization': token ? `Bearer ${token}` : '' };
+
+      steps.push("1. Menguji base URL: https://api-activeatm.adv.my.id/");
+      const baseResponse = await axios.get("https://api-activeatm.adv.my.id/", { timeout: 5000 }).catch(e => {
+        // Even if it returns 404/403, as long as it responds it means the server is online
+        return { status: e.response?.status || 500, data: e.response?.data || e.message };
+      });
+      steps.push(`Base URL merespons dengan HTTP Status: ${baseResponse.status}`);
+
+      steps.push(`2. Menguji endpoint read_vault_trips di: ${CIT_BASE}/read_vault_trips`);
+      const tripsResponse = await axios.get(`${CIT_BASE}/read_vault_trips`, {
+        headers,
+        timeout: 5000
+      });
+      steps.push(`Endpoint read_vault_trips berhasil diakses! Status: ${tripsResponse.status}`);
+      
+      res.json({
+        success: true,
+        message: "Koneksi ke Active ATM API Berhasil!",
+        steps
+      });
+    } catch (err: any) {
+      let errMsg = err.message || String(err);
+      if (err.response) {
+        errMsg += ` (Status: ${err.response.status}, Data: ${JSON.stringify(err.response.data)})`;
+      }
+      steps.push(`Langkah gagal: ${errMsg}`);
+      res.json({
+        success: false,
+        message: `Koneksi Gagal: ${err.message || "Unknown error"}`,
+        steps
       });
     }
   });
