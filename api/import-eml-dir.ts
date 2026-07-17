@@ -139,6 +139,26 @@ export default async function handler(req: any, res: any) {
         const bodyText = parsed.text || '';
         const htmlBody = parsed.html || parsed.textAsHtml || '';
 
+        const parsedAttachments = (parsed.attachments || []).map((att: any) => {
+          let fileData = '';
+          const size = att.size || (att.content ? att.content.length : 0);
+          if (att.content) {
+            if (size <= 5 * 1024 * 1024) { // 5MB limit
+              fileData = Buffer.isBuffer(att.content)
+                ? att.content.toString('base64')
+                : Buffer.from(att.content).toString('base64');
+            } else {
+              console.log(`[EML Import] Skipped Base64 storage for ${att.filename || 'Attachment'} because its size (${size} bytes) exceeds 5MB limit.`);
+            }
+          }
+          return {
+            filename: att.filename || 'Attachment',
+            contentType: att.contentType || '',
+            size: size,
+            fileData: fileData
+          };
+        });
+
         // Classify folder_parent and folder_child
         const { folder_parent, folder_child } = classifyFolder(sender, subject);
 
@@ -153,7 +173,8 @@ export default async function handler(req: any, res: any) {
           html_body: htmlBody,
           tags: [],
           folder_parent,
-          folder_child
+          folder_child,
+          attachments: parsedAttachments
         });
 
         parsedCount++;

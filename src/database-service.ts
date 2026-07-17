@@ -1146,7 +1146,8 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
         currency: currency || 'IDR',
         denomination_suggestion: denominationSuggestion !== undefined ? denominationSuggestion : null,
         total_amount: totalAmount !== undefined ? totalAmount : null,
-        ai_status: normalizedEmail.ai_status || 'PENDING'
+        ai_status: normalizedEmail.ai_status || 'PENDING',
+        attachments: normalizedEmail.attachments !== undefined ? normalizedEmail.attachments : null
       };
 
       const { error } = await supabase.from('emails').upsert(payload, { onConflict: 'message_id' });

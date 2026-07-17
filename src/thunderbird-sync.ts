@@ -86,11 +86,25 @@ export async function syncThunderbirdInbox(customPath?: string): Promise<SyncRes
             const bodyText = parsed.text || '';
             const htmlBody = parsed.html || parsed.textAsHtml || '';
 
-            const parsedAttachments = (parsed.attachments || []).map((att: any) => ({
-              filename: att.filename || 'Attachment',
-              contentType: att.contentType || '',
-              size: att.size || 0
-            }));
+            const parsedAttachments = (parsed.attachments || []).map((att: any) => {
+              let fileData = '';
+              const size = att.size || (att.content ? att.content.length : 0);
+              if (att.content) {
+                if (size <= 5 * 1024 * 1024) { // 5MB limit
+                  fileData = Buffer.isBuffer(att.content)
+                    ? att.content.toString('base64')
+                    : Buffer.from(att.content).toString('base64');
+                } else {
+                  console.log(`[Thunderbird Sync] Skipped Base64 storage for ${att.filename || 'Attachment'} because its size (${size} bytes) exceeds 5MB limit.`);
+                }
+              }
+              return {
+                filename: att.filename || 'Attachment',
+                contentType: att.contentType || '',
+                size: size,
+                fileData: fileData
+              };
+            });
 
             // Apply Business Rules tagging logic
             const tags = getAutoTags(subject, bodyText);

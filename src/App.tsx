@@ -33,7 +33,8 @@ import {
   Sparkles,
   History,
   Coins,
-  MoreVertical
+  MoreVertical,
+  Download
 } from 'lucide-react';
 import CitDashboard from './components/CitDashboard';
 import CitOrderModal from './components/CitOrderModal';
@@ -1600,18 +1601,43 @@ export default function App() {
                           <span>📎</span> Lampiran Dokumen ({selectedEmail.attachments.length})
                         </h4>
                         <div className="flex flex-wrap gap-2.5">
-                          {selectedEmail.attachments.map((att: any, idx: number) => (
-                            <div 
-                              key={idx} 
-                              className="flex items-center gap-2.5 bg-white border border-slate-200/80 rounded-xl px-3.5 py-2.5 text-xs text-slate-600 transition-all hover:border-slate-300 hover:shadow-sm"
-                            >
-                              <span className="text-lg">📄</span>
-                              <div className="flex flex-col text-left">
-                                <span className="font-semibold text-slate-700 max-w-[200px] truncate">{att.filename}</span>
-                                <span className="text-[10px] text-slate-400 font-mono">{(att.size / 1024).toFixed(1)} KB • {att.contentType || 'unknown'}</span>
+                          {selectedEmail.attachments.map((att: any, idx: number) => {
+                            const hasData = !!att.fileData;
+                            const isTooLarge = att.size > 5 * 1024 * 1024;
+                            
+                            return hasData ? (
+                              <a
+                                key={idx}
+                                href={`data:${att.contentType || 'application/octet-stream'};base64,${att.fileData}`}
+                                download={att.filename || 'Attachment'}
+                                className="flex items-center gap-2.5 bg-white border border-slate-200/80 rounded-xl px-3.5 py-2.5 text-xs text-slate-600 transition-all hover:border-slate-300 hover:shadow-sm hover:bg-slate-50/50 group cursor-pointer"
+                                title="Klik untuk mengunduh lampiran"
+                              >
+                                <span className="text-lg group-hover:scale-110 transition-transform">📄</span>
+                                <div className="flex flex-col text-left">
+                                  <span className="font-semibold text-slate-700 max-w-[180px] truncate group-hover:text-blue-600 transition-colors">{att.filename}</span>
+                                  <span className="text-[10px] text-slate-400 font-mono">{(att.size / 1024).toFixed(1)} KB • {att.contentType || 'unknown'}</span>
+                                </div>
+                                <span className="p-1 rounded-md bg-slate-50 text-slate-400 group-hover:bg-blue-50 group-hover:text-blue-600 transition-colors ml-1">
+                                  <Download className="h-3.5 w-3.5" />
+                                </span>
+                              </a>
+                            ) : (
+                              <div 
+                                key={idx}
+                                className="flex items-center gap-2.5 bg-slate-50/80 border border-slate-200/60 rounded-xl px-3.5 py-2.5 text-xs text-slate-400 cursor-not-allowed"
+                                title={isTooLarge ? "File terlalu besar (> 5MB), Base64 tidak disimpan." : "Lampiran tidak memiliki data Base64."}
+                              >
+                                <span className="text-lg">📄</span>
+                                <div className="flex flex-col text-left">
+                                  <span className="font-semibold text-slate-500 max-w-[180px] truncate">{att.filename}</span>
+                                  <span className="text-[10px] text-slate-400 font-mono">
+                                    {(att.size / 1024).toFixed(1)} KB • {isTooLarge ? 'Melebihi 5MB' : 'No Data'}
+                                  </span>
+                                </div>
                               </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       </div>
                     )}
