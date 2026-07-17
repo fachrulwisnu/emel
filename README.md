@@ -1,154 +1,149 @@
-# Workflow Email Ticketing System
+# 🤖 AI Operational Assistant Copilot (CIT & ATM Ticketing System)
 
-Sistem manajemen dan otomasi ticketing email berbasis web (Full-Stack React + Express) yang secara dinamis menarik pesan masuk dari server POP3, menganalisis isi email secara real-time dengan model bahasa tingkat lanjut (LLM), mengklasifikasikan kategori operasional, serta menyinkronkan data secara andal ke database lokal (SQLite) dan cloud (Supabase).
+[![React Version](https://img.shields.io/badge/Frontend-React%2018%20%2B%20Vite-blue?style=for-the-badge&logo=react)](https://react.dev/)
+[![Node.js Version](https://img.shields.io/badge/Backend-Node.js%20Express-green?style=for-the-badge&logo=node.js)](https://nodejs.org/)
+[![Database Cloud](https://img.shields.io/badge/Database-Supabase%20%2B%20SQLite-darkgreen?style=for-the-badge&logo=supabase)](https://supabase.com/)
+[![LLM Models](https://img.shields.io/badge/AI%20Core-NVIDIA%20NIM%20%2B%20Moonshot-orange?style=for-the-badge&logo=nvidia)](https://www.nvidia.com/)
 
-Aplikasi ini dilengkapi dengan asisten cerdas **AI Operational Copilot** bertenaga NVIDIA API (`thinkingmachines/inkling`) untuk menyaring informasi penting, menandai kebutuhan tindakan tindak lanjut, mengidentifikasi level urgensi secara otomatis, dan memfasilitasi integrasi alur kerja lanjutan.
+Sistem automasi ticketing berbasis email tingkat lanjut yang dirancang khusus untuk memproses pesanan **Cash In Transit (CIT)** dan pengisian uang tunai **ATM** secara cerdas, asinkron, dan real-time.
 
 ---
 
-## 🏗️ Alur Proses Sistem (System Process Flow)
+## 📌 1. Project Overview (Ikhtisar Proyek)
 
-Sistem ini berjalan secara berkesinambungan melalui interaksi komponen-komponen utama sebagai berikut:
+**AI Operational Assistant Copilot** mengautomasi alur kerja manual pengolahan email operasional bernilai tinggi. Sistem secara otomatis menguping, membaca, dan menganalisis email masuk yang berisi instruksi rumit, mengekstraksi parameter operasional penting seperti **Bank Tujuan**, **Mata Uang**, **Total Nominal**, serta **Pecahan/Denominasi**, lalu mempresentasikannya ke dalam antarmuka dashboard operasional yang interaktif dan dinamis.
+
+Dengan integrasi cerdas ini, tim operasional dapat memangkas waktu entri data manual dari beberapa menit menjadi dalam hitungan detik secara aman dan presisi tinggi.
+
+---
+
+## 🤖 2. Arsitektur AI & Mekanisme Rotasi Model (High Availability)
+
+Sistem ini didesain tangguh (*resilient*) menggunakan **Multi-Model AI Rotator** guna mengantisipasi kegagalan API, pemadaman jaringan, maupun kuota rate limit (HTTP 429) pada level produksi.
 
 ```
-+--------------------------------------------------------------------------+
-|                       POP3 Mail Server / Client MBOX                     |
-+--------------------------------------------------------------------------+
+                      +-----------------------------+
+                      |     Email Masuk Terdeteksi  |
+                      +-----------------------------+
                                      |
-                                     v [Fetch / Sync]
-+--------------------------------------------------------------------------+
-|                       Background Cron Worker / POP3 API                  |
-+--------------------------------------------------------------------------+
+                                     v
+                      +-----------------------------+
+                      |   Event-Driven Trigger      |
+                      |   (Real-time Worker Node)   |
+                      +-----------------------------+
                                      |
-                         +-----------+-----------+
-                         |                       |
-                         v                       v
-            [Email Body & Subject]        [API Workflow Trigger]
-                         |                       |
-                         v                       v
-+----------------------------------+   +-----------------------------------+
-|     NVIDIA AI API (Copilot)      |   |        CIT API Automation         |
-|   (thinkingmachines/inkling)     |   |       (Workflow Eksternal)        |
-+----------------------------------+   +-----------------------------------+
-                         |                               |
-        [Structured JSON Result]                 [Workflow Log]
-                         |                               |
-                         +-----------+-----------+
-                                     |
-                                     v [Merge Payload]
-+--------------------------------------------------------------------------+
-|                      SQLite & Supabase Database Sync                     |
-|            (Double-Write Engine dengan Fallback Otomatis)                |
-+--------------------------------------------------------------------------+
-                                     |
-                                     v [SSE / Real-time Broadcast]
-+--------------------------------------------------------------------------+
-|                         React Frontend Control UI                        |
-|              - Real-time Inbox           - Custom Filter Engine          |
-|              - AI Insight Copilot Pane   - Retroactive Scan Panel        |
-+--------------------------------------------------------------------------+
+               +---------------------+---------------------+
+               |                                           |
+        [Data Harian]                               [Historical Backfill]
+               |                                           |
+               v                                           v
+    +--------------------+                     +--------------------------+
+    | MODEL UTAMA        |                     | HEAVY-DUTY MODEL         |
+    | z-ai/glm-5.2       |                     | moonshotai/kimi-k2.6     |
+    +--------------------+                     +--------------------------+
+               | (Jika Error / Limit)                      |
+               v                                           |
+    +--------------------+                                 |
+    | FAILOVER MODEL 1   |                                 |
+    | nemotron-340b      |                                 v
+    +--------------------+                     +--------------------------+
+               | (Jika Error / Limit)          |   SSE Live Log Stream    |
+               v                               |   & Progress Bar Client  |
+    +--------------------+                     +--------------------------+
+    | FAILOVER MODEL 2   |                                 |
+    | gemma-2-27b-it     |                                 v
+    +--------------------+                     +--------------------------+
+               | (Jika Semua Gagal)            |  Simpan Hasil ke Cloud   |
+               v                               |     & SQLite Ganda       |
+    +--------------------+                     +--------------------------+
+    | Rule-Based         |
+    | Regex Fallback     |
+    +--------------------+
 ```
 
-### Penjelasan Tahapan Alur Kerja:
-
-1. **Sinkronisasi Otomatis & Manual (POP3 Sync):**
-   * Cron background scheduler (`src/cron.ts`) berjalan setiap 3 menit untuk menarik email terbaru dari server POP3 yang terkonfigurasi.
-   * Pengguna juga dapat memicu sinkronisasi secara manual langsung dari panel control UI.
-
-2. **Analisis Berbasis AI (NVIDIA API Integration):**
-   * Setiap email baru yang masuk dikirim ke fungsi `syncAndAnalyzeEmail` dalam `database-service.ts`.
-   * Sistem menghubungi NVIDIA API melalui model `thinkingmachines/inkling` dengan prompt sistem khusus untuk mengekstrak informasi terstruktur dalam format JSON.
-   * Jika NVIDIA API gagal (misalnya karena batas limit/rate limit), sistem secara otomatis menangani error (graceful fallback) dengan mencatat log khusus di terminal dan tetap memasukkan email dengan status rutin agar operasional sistem tidak terganggu.
-
-3. **Otomatisasi Alur Kerja (CIT API Service):**
-   * Jika email yang masuk berkaitan dengan sistem order perbankan, sistem secara otomatis memicu `triggerCitApiWorkflow` untuk memproses data transaksi dan merekam riwayat eksekusi alur kerja.
-
-4. **Penyimpanan Ganda Berkelanjutan (Dual-Database Sync):**
-   * Data email yang telah digabungkan dengan output terstruktur AI (Summary, Action Required, Urgency Level, Suggested Tag) disimpan secara lokal di database **SQLite** (`emails.db`) serta disinkronkan langsung ke cloud database **Supabase**.
-
-5. **Antarmuka Real-time (React Frontend):**
-   * Setiap kali email baru berhasil diproses, server memancarkan event langsung ke klien melalui *Server-Sent Events (SSE)* untuk pembaruan tampilan instan tanpa perlu memuat ulang halaman.
+### ⚙️ Detail Alur Kerja AI
+1. **Event-Driven Processing:** Sistem meninggalkan metode polling Cron Job konvensional yang lambat. Ketika ada email baru yang masuk, sistem secara instan memicu Worker Node.js untuk memproses analisis AI secara asinkron (menggunakan `Promise.all` untuk batch processing berkinerja tinggi).
+2. **AI Model Rotator (High Availability):**
+   * **Model Utama (`z-ai/glm-5.2`):** Dioptimalkan untuk ekstraksi cepat data harian email menjadi objek JSON operasional yang tervalidasi.
+   * **Mekanisme Failover Otomatis:** Apabila terjadi pembatasan kuota atau API sedang tidak dapat dijangkau, sistem otomatis mengalihkan *request* ke **nvidia/nemotron-340b-instruct** atau **google/gemma-2-27b-it** secara senyap tanpa menghentikan worker.
+   * **Rule-Based Fallback:** Sebagai pertahanan terakhir, sistem didukung algoritma parsing reguler (*Regex*) untuk mengekstrak data dasar sehingga data tetap berhasil ter-input dengan aman.
+3. **Heavy-Duty Backfill Model (`moonshotai/kimi-k2.6`):** Digunakan khusus untuk memproses pengolahan ulang ribuan data historis yang kosong di latar belakang karena memiliki jendela konteks (*long-context window*) yang sangat panjang serta kemampuan inferensi logika Bahasa Indonesia yang superior.
 
 ---
 
-## 🚀 Fitur Utama
+## ✨ 3. Fitur Utama (Key Features)
 
-* **AI Operational Assistant Copilot:** Menganalisis subjek dan isi email secara instan untuk mendeteksi tindakan yang diperlukan, menyusun ringkasan (summary) cerdas dalam Bahasa Indonesia, serta memberikan label urgensi tinggi/sedang/rendah secara real-time.
-* **Deteksi CIT/ATM Otomatis:** AI secara cerdas mengenali pesanan operasional (Cash In Transit / ATM Cash Load) jika email berisi kata kunci seperti `"CIT", "ATM", "Setor", "Bon", "Delivery", "Geser Vault"` dan menandai bendera `is_cit_order` menjadi true.
-* **Sistem Routing Wilayah & Cabang:** Penentuan folder Regional (`suggested_folder_parent`) dan Cabang (`suggested_folder_child`) secara presisi berdasarkan domain pengirim atau subjek:
-  * **REGION 1**: PALEMBANG, MEDAN, BATAM, RAWAMANGUN, JAMBI, PADANG, PEKANBARU
-  * **REGION 2**: PONTIANAK, BALIKPAPAN, SAMARINDA, BANJARMASIN, SINGKAWANG
-  * **REGION 3**: MERUYA, BENGKULU, LAMPUNG, SERANG
-  * **REGION 4**: DENPASAR, KUPANG, BANDUNG, MATARAM, MANADO, CIREBON
-  * **REGION 5**: SEMARANG, SOLO, TEGAL, YOGYAKARTA, PURWOKERTO, KUDUS
-  * **REGION 6**: MAKASSAR, KEDIRI, JEMBER, SURABAYA, MALANG
-  * **REGION 10**: BENGKULU (Khusus subject berisi `"ADV Bengkulu"`)
-* **Integrasi ActiveATM CIT API:** Antarmuka khusus untuk berinteraksi langsung dengan ActiveATM API (`https://api-activeatm.adv.my.id`) melalui proxy server backend yang aman untuk mengambil jenis mata uang, unit kas, master entitas cabang, serta status perjalanan trip.
-* **Form Order & Auto-Fill Satu-Klik:** Tombol "Create Order CIT" langsung di panel samping Copilot yang secara otomatis memindahkan rincian email, nomor referensi, target cabang, jenis order, dan nilai estimasi uang tunai ke dalam formulir pembuatan trip baru.
-* **Integrasi NVIDIA AI Chat Completion:** Menghubungkan library `openai` resmi dengan endpoint NVIDIA (`https://integrate.api.nvidia.com/v1`) secara stabil dan aman menggunakan variabel lingkungan.
-* **POP3 Client Integration:** Mendukung pengambilan email real-time menggunakan modul POP3 client yang dapat dikustomisasi parameternya di halaman pengaturan.
-* **Filter Dinamis & Pemindaian Retroaktif:** Pengguna dapat membuat aturan filter berbasis kata kunci atau kondisi pengirim, serta menjalankannya secara retroaktif untuk mengelompokkan ribuan email yang sudah tersimpan sebelumnya.
-* **Tampilan Monitoring Real-time:** Menampilkan status log sistem di bagian terminal secara presisi untuk setiap pemrosesan email masuk:
-  `[AI Copilot] Email processed: [Subject Email] | Category: [Hasil AI]`
+| Fitur | Deskripsi | Teknologi Pendukung |
+| :--- | :--- | :--- |
+| **🤖 Smart JSON Extraction** | Secara otomatis mem-parsing body email (bahkan thread percakapan yang panjang) dan mengubahnya menjadi form terstruktur yang berisi mata uang, total nominal, pecahan denominasi, urgensi, dan tag operasional. | NVIDIA NIM, AI Model Rotator |
+| **📧 Gmail-Style UI** | Tampilan surat masuk yang bersih dan minimalis menyerupai inbox Gmail. Menggunakan teknik DOM manipulation untuk mendeteksi riwayat percakapan lama (`> quote`) dan menyembunyikannya ke dalam tombol collapsible `...` agar UI tetap rapi. | React, Tailwinds CSS |
+| **📎 Serverless Base64 Attachments** | Berkas lampiran gambar atau PDF tidak disimpan dalam bucket cloud eksternal. Sistem mengonversi lampiran langsung menjadi Base64 string terkompresi (maks 3MB) ke dalam PostgreSQL. Client me-render thumbnail interaktif yang siap diunduh. | SQLite, Supabase Engine |
+| **🔄 Real-time Historical Backfill** | Fitur singkronisasi email historis asinkron menggunakan Server-Sent Events (SSE). UI menampilkan Log Terminal & Progress Bar yang ter-update secara real-time dari data stream backend dengan delay otomatis pencegah rate limit. | EventSource API, Express SSE |
+| **🗺️ Regional Branch Routing** | Mengklasifikasikan email ke struktur folder wilayah regional (Region 1-10) dan kantor cabang secara otomatis berdasarkan domain pengirim atau subjek email. | Routing Engine |
+| **💳 ActiveATM CIT API Integration** | Dilengkapi antarmuka proxy server yang aman untuk terhubung dengan API eksternal guna memproses status penugasan pengiriman uang dan ketersediaan unit armada pengawal. | Axios Proxy, Express Backend |
 
 ---
 
-## 🛠️ Stack Teknologi
+## 🛠️ 4. Tech Stack (Spesifikasi Teknologi)
 
-* **Frontend:** React 18, Vite, Tailwind CSS, Lucide Icons, Framer Motion (untuk animasi transisi antarmuka).
-* **Backend:** Node.js Express Server, tsx, esbuild, Axios Proxy API.
-* **Database:** SQLite (penyimpanan lokal cepat) & Supabase Client (untuk singkronisasi cloud).
-* **AI Integrasi:** SDK `openai` resmi dikonfigurasi menggunakan endpoint NVIDIA API dan model `thinkingmachines/inkling`.
-* **API Eksternal:** Layanan API ActiveATM (`https://api-activeatm.adv.my.id`) untuk pembuatan dan pelacakan order CIT/ATM.
-
----
-
-## 📋 Variabel Lingkungan (.env)
-
-Buat file `.env` di direktori utama proyek Anda dan isi nilai berikut untuk mengaktifkan koneksi database dan AI:
-
-```env
-# Koneksi Supabase Cloud (Opsional)
-SUPABASE_URL=your_supabase_project_url
-SUPABASE_KEY=your_supabase_anon_key
-
-# Kunci API NVIDIA (Wajib untuk Analisis Cerdas AI)
-NVIDIA_API_KEY=your_nvidia_api_key_here
-```
+* **Frontend Framework:** React 18, Vite, Tailwind CSS, Lucide Icons, Framer Motion (Animasi Micro-interaction).
+* **Backend Runtime:** Node.js Express Server, tsx (TypeScript Execution), esbuild (Ultra-fast bundler).
+* **Databases:** Supabase PostgreSQL (Cloud State Sync) & SQLite 3 (Durable Local Storage Engine).
+* **AI & Integration:** SDK `openai` resmi terintegrasi dengan NVIDIA NIM API endpoints & Moonshot AI.
 
 ---
 
-## 📦 Panduan Instalasi dan Menjalankan Proyek
+## 🚀 5. Memulai (Getting Started)
 
-### 1. Instalasi Dependensi
-Pastikan Anda memiliki Node.js terinstal pada sistem Anda, kemudian jalankan:
-```bash
-npm install
-```
+### Prasyarat System
+* Node.js v18 atau versi yang lebih baru.
+* Akun Supabase (opsional, sistem otomatis menggunakan SQLite lokal jika tidak dikonfigurasi).
 
-### 2. Menjalankan Server Pengembangan (Dev Mode)
-Untuk memulai server pengembangan Express + Vite secara bersamaan di port `3000`:
-```bash
-npm run dev
-```
-Setelah server menyala, buka browser Anda dan navigasikan ke: `http://localhost:3000`
+### Langkah Instalasi
 
-### 3. Membangun Proyek untuk Produksi (Build & Bundling)
-Untuk memaketkan aplikasi frontend dan mengompilasi file backend TypeScript menjadi satu file produksi optimal:
-```bash
-npm run build
-```
+1. **Clone repositori dan masuk ke direktori proyek:**
+   ```bash
+   git clone <repository-url>
+   cd ai-operational-copilot
+   ```
 
-### 4. Menjalankan dalam Mode Produksi
-Jalankan aplikasi hasil kompilasi produksi dengan perintah:
-```bash
-npm run start
-```
+2. **Instal seluruh dependensi yang diperlukan:**
+   ```bash
+   npm install
+   ```
+
+3. **Konfigurasi Environment Variables (`.env`):**
+   Salin berkas `.env.example` menjadi `.env` di root direktori Anda:
+   ```bash
+   cp .env.example .env
+   ```
+   Isi parameter rahasia berikut di dalam file `.env`:
+   ```env
+   # API Key NVIDIA NIM (Wajib untuk Analisis Cerdas AI)
+   NVIDIA_API_KEY=nvapi-22LB****************************************
+   
+   # Sinkronisasi Cloud Supabase (Opsional)
+   SUPABASE_URL=https://your-project.supabase.co
+   SUPABASE_KEY=your-anon-key
+   ```
+
+4. **Jalankan Aplikasi dalam Mode Pengembangan (Dev Mode):**
+   ```bash
+   npm run dev
+   ```
+   Aplikasi dan backend server akan berjalan secara paralel di alamat [http://localhost:3000](http://localhost:3000).
+
+5. **Kompilasi Produksi (Production Build):**
+   Untuk mengompilasi aplikasi frontend dan membundel backend TypeScript menjadi satu berkas CJS produksi yang sangat optimal:
+   ```bash
+   npm run build
+   npm run start
+   ```
 
 ---
 
-## ⚙️ Logika Penanganan Kesalahan (Error Handling & Robustness)
+## 🛡️ 6. Penanganan Kesalahan (Error Handling & Robustness)
 
-Sistem dirancang dengan tingkat ketahanan tinggi terhadap gangguan jaringan atau layanan API eksternal:
-* Jika API NVIDIA mengalami timeout atau pembatasan kuota (*rate limit*), sistem menangani error secara tertutup, menulis pesan peringatan `[AI Copilot] AI sedang tidak tersedia` ke log terminal, dan melanjutkan penyimpanan email ke database dengan nilai aman default (`action_required: false` dan `urgency_level: "Routine"`).
-* Sinkronisasi data ke database lokal menggunakan skema SQLite yang kokoh dan tahan terhadap gangguan koneksi internet, sementara sinkronisasi Supabase akan dicoba secara asinkron dengan pesan peringatan di terminal apabila server eksternal offline.
+* **API Timeout Protection:** Permintaan AI eksternal dilengkapi dengan batasan timeout aman sebesar 25 detik untuk menghindari deadlock pada server.
+* **Stream Disconnect Recovery:** Client-side EventSource secara otomatis akan melakukan upaya penyambungan ulang (*auto-reconnect*) jika koneksi internet terputus di tengah proses backfilling.
+* **Double-Write Fallback:** Jika jaringan ke cloud database Supabase tidak stabil, server akan tetap menyimpan seluruh log operasional dan perubahan di SQLite lokal secara utuh, lalu memperbaruinya ke cloud saat koneksi pulih kembali.

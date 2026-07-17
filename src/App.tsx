@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { 
   Mail, 
@@ -175,7 +175,16 @@ export default function App() {
   const [isTestingConn, setIsTestingConn] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [isBackfilling, setIsBackfilling] = useState(false);
-  const [backfillResult, setBackfillResult] = useState<{ processed: number; failed: number; skipped: number } | null>(null);
+  const [backfillLogs, setBackfillLogs] = useState<string[]>([]);
+  const [backfillProgress, setBackfillProgress] = useState<number>(0);
+  const [isBackfillStreaming, setIsBackfillStreaming] = useState(false);
+  const logsEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (logsEndRef.current) {
+      logsEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [backfillLogs]);
 
   // Floating Toasts
   const [toasts, setToasts] = useState<{ id: number; title: string; message: string }[]>([]);
@@ -702,34 +711,55 @@ export default function App() {
     }
   };
 
-  // Historical Backfill Trigger
-  const handleFetchHistoricalData = async () => {
-    if (!confirm("Proses ini akan merangkum ribuan email lama. Yakin ingin melanjutkan?")) return;
+  // Historical Backfill Trigger with Server Sent Events (SSE) and Moonshot AI
+  const handleFetchHistoricalData = () => {
+    if (!confirm("Proses ini akan merangkum seluruh email historis kosong menggunakan model Moonshot Kimi-k2.6 secara real-time. Yakin ingin melanjutkan?")) return;
 
     setIsBackfilling(true);
-    setBackfillResult(null);
-    try {
-      addToast('Backfill Started', 'Proses Backfill dimulai di background worker...');
-      const res = await fetch('/api/backfill', { method: 'POST' });
-      const data = await res.json();
-      
-      if (data.success) {
-        addToast('Backfill Running', 'Proses backfill berjalan asinkron di background. Email akan terupdate otomatis.');
-        // Let's set a state showing that background processing is active
-        setBackfillResult({
-          processed: 0,
-          failed: 0,
-          skipped: 0
-        });
-      } else {
-        addToast('Backfill Failed', data.message || 'Gagal memicu backfill.');
+    setBackfillProgress(0);
+    setBackfillLogs(["[System] Memulai koneksi real-time Stream ke backend..."]);
+    setIsBackfillStreaming(true);
+
+    const eventSource = new EventSource('/api/backfill-stream');
+
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        
+        if (data.type === 'start') {
+          setBackfillLogs(prev => [...prev, `[System] ${data.message}`]);
+        } else if (data.type === 'progress') {
+          const percent = data.total > 0 ? Math.round((data.current / data.total) * 100) : 0;
+          setBackfillProgress(percent);
+          setBackfillLogs(prev => [...prev, `[Progress ${percent}%] ${data.message}`]);
+        } else if (data.type === 'complete') {
+          setBackfillProgress(100);
+          setBackfillLogs(prev => [...prev, `[Selesai] ${data.message}`]);
+          addToast('Backfill Selesai', data.message || 'Semua data historis selesai di-backfill.');
+          eventSource.close();
+          setIsBackfillStreaming(false);
+          setIsBackfilling(false);
+          loadEmails(); // Refresh emails list
+        } else if (data.type === 'error') {
+          setBackfillLogs(prev => [...prev, `[Error] ${data.message}`]);
+          addToast('Backfill Error', data.message);
+          eventSource.close();
+          setIsBackfillStreaming(false);
+          setIsBackfilling(false);
+        }
+      } catch (err: any) {
+        console.error("Gagal parsing data SSE:", err);
       }
-    } catch (err: any) {
-      console.error("Gagal memicu backfill:", err);
-      addToast('Backfill Error', err.message || 'Failed to trigger backfill process.');
-    } finally {
+    };
+
+    eventSource.onerror = (err) => {
+      console.error("SSE EventSource error:", err);
+      setBackfillLogs(prev => [...prev, "[Error] Koneksi stream terputus atau terjadi kesalahan server."]);
+      addToast('Stream Error', 'Koneksi real-time ke server terputus.');
+      eventSource.close();
+      setIsBackfillStreaming(false);
       setIsBackfilling(false);
-    }
+    };
   };
 
   // Manual Trigger Sync
@@ -2441,15 +2471,51 @@ export default function App() {
                         </button>
                       </div>
 
-                      {backfillResult && (
-                        <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl space-y-2 mt-4">
-                          <p className="font-bold text-emerald-900 flex items-center gap-1.5 text-xs">
-                            <CheckCircle2 className="h-4 w-4 text-emerald-600 animate-bounce" />
-                            Proses Backfill Berhasil Dimulai di Latar Belakang!
-                          </p>
-                          <p className="text-[11px] text-slate-600 leading-normal pl-5">
-                            Sistem sedang melakukan sinkronisasi asinkron secara aman dengan jeda (delay) otomatis untuk mencegah kelebihan beban API. Anda dapat terus menggunakan aplikasi, riwayat percakapan dan status email akan diperbarui secara otomatis.
-                          </p>
+                      {(isBackfillStreaming || backfillLogs.length > 0) && (
+                        <div className="mt-6 space-y-4">
+                          {/* Progress Bar Container */}
+                          <div className="space-y-1">
+                            <div className="flex justify-between items-center text-xs text-slate-600 font-bold">
+                              <span>Status Proses Real-time (Moonshot Kimi-k2.6):</span>
+                              <span>{backfillProgress}%</span>
+                            </div>
+                            <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden border border-slate-200">
+                              <div 
+                                className="bg-gradient-to-r from-blue-600 to-emerald-500 h-full transition-all duration-300"
+                                style={{ width: `${backfillProgress}%` }}
+                              />
+                            </div>
+                          </div>
+
+                          {/* Terminal-like log container */}
+                          <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 shadow-inner">
+                            <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-2 text-[10px] text-slate-500 font-mono">
+                              <span className="flex items-center gap-1.5">
+                                <span className={`h-2 w-2 rounded-full ${isBackfillStreaming ? "bg-emerald-500 animate-pulse" : "bg-slate-600"}`} />
+                                KIMI-K2.6 STREAM ENGINE
+                              </span>
+                              <span>LOGS CONTROLLER</span>
+                            </div>
+                            
+                            <div className="max-h-[200px] overflow-y-auto font-mono text-[11px] text-slate-300 space-y-1.5">
+                              {backfillLogs.map((log, index) => {
+                                let colorClass = "text-slate-400";
+                                if (log.includes("[System]")) colorClass = "text-cyan-400 font-semibold";
+                                if (log.includes("[Selesai]")) colorClass = "text-emerald-400 font-bold";
+                                if (log.includes("[Error]")) colorClass = "text-rose-400 font-bold";
+                                if (log.includes("[SUKSES AI]")) colorClass = "text-emerald-300";
+                                if (log.includes("[FALLBACK]")) colorClass = "text-orange-400";
+                                
+                                return (
+                                  <div key={index} className={`${colorClass} leading-normal`}>
+                                    <span className="text-slate-600 mr-2">&gt;</span>
+                                    {log}
+                                  </div>
+                                );
+                              })}
+                              <div ref={logsEndRef} />
+                            </div>
+                          </div>
                         </div>
                       )}
                     </div>

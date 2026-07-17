@@ -13,6 +13,8 @@ import {
   dbSaveCustomFilter,
   dbRunHistoricalBackfill,
   runHistoricalBackfill,
+  dbGetUnsummarizedEmails,
+  ruleBasedFallback,
   registerDbBroadcaster
 } from "./src/database-service";
 import { 
@@ -235,6 +237,151 @@ async function startServer() {
     }
   });
 
+  // GET Server-Sent Events (SSE) stream for Historical Data Backfill with Moonshot AI
+  app.get("/api/backfill-stream", async (req, res) => {
+    // 1. SET SSE HEADERS
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no' // Prevent proxy buffering
+    });
+    res.write(':\n\n'); // SSE start message
+    
+    try {
+      console.log("[SSE] Client connected to /api/backfill-stream");
+      
+      // 2. QUERY DATABASE FOR UNSUMMARIZED EMAILS
+      const unsummarized = await dbGetUnsummarizedEmails();
+      const total_data = unsummarized.length;
+
+      res.write(`data: ${JSON.stringify({ type: 'start', total: total_data, message: `Ditemukan ${total_data} email historis tanpa rangkuman.` })}\n\n`);
+
+      if (total_data === 0) {
+        res.write(`data: ${JSON.stringify({ type: 'complete', progress: 100, message: 'Semua historical data sudah dirangkum!' })}\n\n`);
+        res.end();
+        return;
+      }
+
+      // 3. PROCESS IN BATCHES OF 5
+      const BATCH_SIZE = 5;
+      let completed_count = 0;
+
+      for (let i = 0; i < total_data; i += BATCH_SIZE) {
+        // Check if connection is closed by user
+        if (req.closed) {
+          console.log("[SSE] Connection closed by client.");
+          break;
+        }
+
+        const batch = unsummarized.slice(i, i + BATCH_SIZE);
+        console.log(`[SSE Backfill] Processing batch ${Math.floor(i / BATCH_SIZE) + 1} with ${batch.length} emails...`);
+
+        await Promise.all(batch.map(async (email) => {
+          if (req.closed) return;
+          
+          const subject = email.subject || '';
+          const bodyText = email.body_text || '';
+          const messageId = email.message_id;
+
+          // Mark as analyzing
+          await dbUpdateEmailFields(messageId, { ai_status: 'ANALYZING' });
+
+          // Send analyzing status
+          res.write(`data: ${JSON.stringify({ 
+            type: 'progress', 
+            current: completed_count, 
+            total: total_data, 
+            message: `Sedang menganalisis email: "${subject}"...` 
+          })}\n\n`);
+
+          let attachmentsList = '';
+          if (email.attachments) {
+            try {
+              const atts = typeof email.attachments === 'string' ? JSON.parse(email.attachments) : email.attachments;
+              if (Array.isArray(atts)) {
+                attachmentsList = atts.map((a: any) => a.filename || 'File').join(', ');
+              }
+            } catch (e) {}
+          }
+
+          let aiResult: any = null;
+          if (bodyText.trim().length >= 10) {
+            aiResult = await getSummaryFromMoonshot(subject, bodyText, attachmentsList);
+          }
+
+          if (aiResult && aiResult.summary && aiResult.summary.trim() !== '') {
+            // Save to DB
+            await dbUpdateEmailFields(messageId, {
+              summary: aiResult.summary,
+              action_required: !!aiResult.action_required,
+              urgency_level: aiResult.urgency_level || "Routine",
+              suggested_tag: aiResult.suggested_tag || "Informasi",
+              folder_parent: aiResult.suggested_folder_parent || "Operation",
+              folder_child: aiResult.suggested_folder_child || "General",
+              is_important: aiResult.urgency_level === 'High' || aiResult.urgency_level === 'Peringatan' || !!aiResult.action_required,
+              is_cit_order: !!aiResult.is_cit_order,
+              cit_type: aiResult.cit_type || "None",
+              suggested_bank: aiResult.suggested_bank || "",
+              extracted_notes: aiResult.extracted_notes || "",
+              currency: aiResult.currency || "IDR",
+              denomination_suggestion: aiResult.denomination_suggestion ? Number(aiResult.denomination_suggestion) : undefined,
+              total_amount: aiResult.total_amount ? Number(aiResult.total_amount) : undefined,
+              ai_status: 'COMPLETED'
+            });
+            completed_count++;
+            res.write(`data: ${JSON.stringify({ 
+              type: 'progress', 
+              current: completed_count, 
+              total: total_data, 
+              message: `[SUKSES AI] Rangkuman selesai untuk: "${subject}"` 
+            })}\n\n`);
+          } else {
+            // Fallback
+            console.warn(`[SSE Backfill] Fallback applied for ${subject}`);
+            const fb = ruleBasedFallback(subject, bodyText);
+            await dbUpdateEmailFields(messageId, {
+              summary: fb.summary || "Data historis tidak terbaca jelas",
+              action_required: fb.action_required,
+              urgency_level: fb.is_important ? "Medium" : "Routine",
+              suggested_tag: fb.suggested_tag || "Informasi",
+              folder_parent: "Operation",
+              folder_child: "General",
+              is_important: fb.is_important,
+              ai_status: 'COMPLETED'
+            });
+            completed_count++;
+            res.write(`data: ${JSON.stringify({ 
+              type: 'progress', 
+              current: completed_count, 
+              total: total_data, 
+              message: `[FALLBACK] Gagal memproses AI, menggunakan fallback aturan untuk: "${subject}"` 
+            })}\n\n`);
+          }
+        }));
+
+        // Delay between batches to respect rate limit of Moonshot/Kimi API (1.5 seconds)
+        if (i + BATCH_SIZE < total_data && !req.closed) {
+          await new Promise(r => setTimeout(r, 1500));
+        }
+      }
+
+      if (!req.closed) {
+        res.write(`data: ${JSON.stringify({ 
+          type: 'complete', 
+          message: 'Semua historical data berhasil di-backfill!' 
+        })}\n\n`);
+        res.end();
+      }
+    } catch (err: any) {
+      console.error("[SSE Backfill Error]:", err);
+      if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({ type: 'error', message: `Gagal memproses backfill: ${err.message || String(err)}` })}\n\n`);
+        res.end();
+      }
+    }
+  });
+
   // Manual Trigger for POP3 Fetch/Sync
   app.post("/api/fetch-emails", async (req, res) => {
     try {
@@ -428,6 +575,67 @@ async function startServer() {
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Email Ticketing & Automation System running on http://localhost:${PORT}`);
   });
+}
+
+async function getSummaryFromMoonshot(subject: string, bodyText: string, attachmentsStr: string): Promise<any> {
+  const invokeUrl = "https://integrate.api.nvidia.com/v1/chat/completions";
+  const headers = {
+    "Authorization": "Bearer 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",
+    "Accept": "application/json",
+    "Content-Type": "application/json"
+  };
+
+  const systemContent = `Anda adalah asisten data operasional cerdas. Rangkum email berikut dan tentukan parameter operasional secara akurat. Output HARUS berupa JSON murni tanpa markdown, tanpa penjelasan di luar JSON.
+
+JSON schema:
+{
+  "summary": "Ringkasan isi email dalam Bahasa Indonesia",
+  "urgency_level": "High" | "Medium" | "Routine",
+  "action_required": true | false,
+  "suggested_tag": "CIT" | "ATM" | "Penugasan" | "Peringatan" | "Informasi" | "Lainnya",
+  "suggested_folder_parent": "REGION 1" | "REGION 2" | "REGION 3" | "REGION 4" | "REGION 5" | "REGION 6",
+  "suggested_folder_child": "MEDAN" | "SURABAYA" | "JAKARTA" | "General" | "etc",
+  "is_cit_order": true | false,
+  "cit_type": "ATM" | "CIT" | "None",
+  "suggested_bank": "BCA" | "MANDIRI" | "BRI" | "BNI" | "Lainnya" | "",
+  "extracted_notes": "Instruksi khusus jika ada",
+  "currency": "IDR" | "USD",
+  "total_amount": number | null,
+  "denomination_suggestion": number | null
+}`;
+
+  const payload = {
+    "model": "moonshotai/kimi-k2.6",
+    "messages": [
+      { "role": "system", "content": systemContent },
+      { "role": "user", "content": `Subject: ${subject}\n\nBody:\n${bodyText}\n\nAttachments:\n${attachmentsStr}` }
+    ],
+    "max_tokens": 1500,
+    "temperature": 0.2,
+    "top_p": 1
+  };
+
+  try {
+    const response = await axios.post(invokeUrl, payload, { headers, timeout: 25000 });
+    let text = response.data.choices[0].message.content;
+    
+    // Clean JSON markdown blocks if any
+    let cleaned = text.trim();
+    if (cleaned.startsWith("```json")) {
+      cleaned = cleaned.substring(7);
+    } else if (cleaned.startsWith("```")) {
+      cleaned = cleaned.substring(3);
+    }
+    if (cleaned.endsWith("```")) {
+      cleaned = cleaned.substring(0, cleaned.length - 3);
+    }
+    cleaned = cleaned.trim();
+    
+    return JSON.parse(cleaned);
+  } catch (error: any) {
+    console.error("[Moonshot AI Error]:", error.message || error);
+    return null;
+  }
 }
 
 startServer();

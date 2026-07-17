@@ -406,7 +406,7 @@ Setiap email harus dianalisis untuk menghasilkan:
   return ruleBasedFallback(subject, bodyText);
 }
 
-function ruleBasedFallback(subject: string, bodyText: string): {
+export function ruleBasedFallback(subject: string, bodyText: string): {
   summary: string;
   action_required: boolean;
   suggested_tag: string;
@@ -1750,4 +1750,63 @@ export function initSupabaseRealtime() {
       console.log(`[Supabase Realtime] Subscription status: ${status}`);
     });
 }
+
+/**
+ * Fetches all unsummarized emails from Supabase and SQLite.
+ */
+export async function dbGetUnsummarizedEmails(): Promise<any[]> {
+  const supabase = getSupabaseClient();
+  let emails: any[] = [];
+  
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('emails')
+        .select('*')
+        .or('summary.is.null,summary.eq.,summary.eq.No summary generated,summary.eq.Data historis tidak terbaca jelas');
+      if (!error && data) {
+        emails = data.map((row: any) => ({
+          ...row,
+          tags: typeof row.tags === 'string' ? JSON.parse(row.tags || '[]') : (row.tags || []),
+          attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || [])
+        }));
+      }
+    } catch (err) {
+      console.error('[Supabase Unsummarized Fetch Exception]:', err);
+    }
+  }
+
+  // Fallback/merge with SQLite
+  const db = getSqliteDb();
+  const localEmails: any[] = await new Promise((resolve, reject) => {
+    db.all(
+      "SELECT * FROM emails WHERE summary IS NULL OR summary = '' OR summary = 'No summary generated' OR summary = 'Data historis tidak terbaca jelas'",
+      [],
+      (err, rows) => {
+        if (err) return reject(err);
+        resolve(rows || []);
+      }
+    );
+  });
+
+  // Merge them by message_id
+  const mergedMap = new Map<string, any>();
+  for (const e of emails) {
+    if (e.message_id) {
+      mergedMap.set(e.message_id, e);
+    }
+  }
+  for (const e of localEmails) {
+    if (e.message_id && !mergedMap.has(e.message_id)) {
+      mergedMap.set(e.message_id, {
+        ...e,
+        tags: typeof e.tags === 'string' ? JSON.parse(e.tags || '[]') : (e.tags || []),
+        attachments: typeof e.attachments === 'string' ? JSON.parse(e.attachments || '[]') : (e.attachments || [])
+      });
+    }
+  }
+
+  return Array.from(mergedMap.values());
+}
+
 
