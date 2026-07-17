@@ -1,11 +1,15 @@
-import { getCustomFilters, saveCustomFilter, deleteCustomFilter } from '../src/sqlite-db';
+import { 
+  dbGetCustomFilters, 
+  dbSaveCustomFilter, 
+  dbDeleteCustomFilter 
+} from '../src/database-service';
 
 export default async function handler(req: any, res: any) {
   const { method } = req;
 
   try {
     if (method === 'GET') {
-      const filters = await getCustomFilters();
+      const filters = await dbGetCustomFilters();
       return res.json({ success: true, filters });
     }
 
@@ -16,7 +20,7 @@ export default async function handler(req: any, res: any) {
         if (!id) {
           return res.status(400).json({ success: false, message: 'Missing filter ID for deletion' });
         }
-        await deleteCustomFilter(id);
+        await dbDeleteCustomFilter(id);
         return res.json({ success: true, message: 'Filter deleted successfully' });
       }
 
@@ -24,7 +28,7 @@ export default async function handler(req: any, res: any) {
         return res.status(400).json({ success: false, message: 'Missing filter body' });
       }
 
-      await saveCustomFilter(filter);
+      await dbSaveCustomFilter(filter);
       return res.json({ success: true, message: 'Filter saved successfully' });
     }
 

@@ -1,6 +1,6 @@
 {
   "name": "Email Ticketing System",
-  "description": "A modern 3-pane email ticketing dashboard that synchronizes directly from local Thunderbird MBOX files and stores emails inside an SQLite database with automated business rules tagging.",
+  "description": "Workflow Automation Email Ticketing System. Includes automatic background POP3 email sync, custom routing engine, and sequential CIT REST API chaining.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

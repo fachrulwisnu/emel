@@ -1,12 +1,20 @@
-import express from "express";
+import express, { Response } from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
-import { initDb } from "./src/sqlite-db";
+import { 
+  initDatabaseService, 
+  getAppSettings, 
+  saveAppSettings, 
+  dbGetAllEmails, 
+  dbClearEmails 
+} from "./src/database-service";
+import { 
+  performBackgroundSync, 
+  startAutoSyncCron, 
+  registerBroadcaster 
+} from "./src/cron";
 import testConnectionHandler from "./api/test-connection";
-import fetchEmailsHandler from "./api/fetch-emails";
 import simulateEmailsHandler from "./api/simulate-emails";
-import emailsHandler from "./api/emails";
-import clearEmailsHandler from "./api/clear-emails";
 import syncThunderbirdHandler from "./api/sync-thunderbird";
 import importMboxHandler from "./api/import-mbox";
 import importEmlDirHandler from "./api/import-eml-dir";
@@ -17,13 +25,30 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // Initialize local SQLite database before starting server listeners
+  // Initialize unified DB service (SQLite schema verification, migrations, and Supabase hooks)
   try {
-    await initDb();
-    console.log("[Server Initialization] SQLite database initialized successfully.");
+    await initDatabaseService();
+    console.log("[Server Initialization] Database service initialized successfully.");
   } catch (dbErr) {
-    console.error("[Server Initialization] Failed to initialize SQLite database:", dbErr);
+    console.error("[Server Initialization] Failed to initialize database service:", dbErr);
   }
+
+  // SSE broadcast client collection
+  let sseClients: Response[] = [];
+
+  function broadcastEvent(event: string, data: any) {
+    const payload = `data: ${JSON.stringify({ event, data })}\n\n`;
+    sseClients.forEach(client => {
+      try {
+        client.write(payload);
+      } catch (e) {
+        console.error("[SSE] Error writing to client:", e);
+      }
+    });
+  }
+
+  // Register real-time updater
+  registerBroadcaster(broadcastEvent);
 
   // Enable JSON request parsing
   app.use(express.json({ limit: '50mb' }));
@@ -32,28 +57,86 @@ async function startServer() {
   
   // Health check
   app.get("/api/health", (req, res) => {
-    res.json({ status: "ok", time: new Date().toISOString(), localMode: true });
+    res.json({ status: "ok", time: new Date().toISOString() });
   });
 
-  // Get saved emails from local SQLite database
-  app.get("/api/emails", emailsHandler);
+  // Real-time Event Stream (SSE)
+  app.get("/api/events", (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
 
-  // Clear emails database cache
-  app.post("/api/clear-emails", clearEmailsHandler);
+    sseClients.push(res);
 
-  // Sync Thunderbird Inbox MBOX
+    req.on('close', () => {
+      sseClients = sseClients.filter(client => client !== res);
+    });
+  });
+
+  // Settings Endpoints
+  app.get("/api/settings", (req, res) => {
+    res.json({ success: true, settings: getAppSettings() });
+  });
+
+  app.post("/api/settings", (req, res) => {
+    try {
+      const updated = saveAppSettings(req.body);
+      res.json({ success: true, settings: updated });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  // Get saved emails from active DB (Supabase if credentials filled, otherwise SQLite)
+  app.get("/api/emails", async (req, res) => {
+    try {
+      const emails = await dbGetAllEmails();
+      res.json({ success: true, emails });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // Clear emails database cache (SQLite & Supabase)
+  app.post("/api/clear-emails", async (req, res) => {
+    try {
+      await dbClearEmails();
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // Manual Trigger for POP3 Fetch/Sync
+  app.post("/api/fetch-emails", async (req, res) => {
+    try {
+      const result = await performBackgroundSync();
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // Folder tree counting endpoint
+  app.get("/api/folders", foldersHandler);
+
+  // Custom filters CRUD endpoints
+  app.get("/api/custom-filters", customFiltersHandler);
+  app.post("/api/custom-filters", customFiltersHandler);
+
+  // Connection diagnostics & Simulator
+  app.post("/api/test-connection", testConnectionHandler);
+  app.post("/api/simulate-emails", simulateEmailsHandler);
+
+  // Thunderbird local import handlers
   app.post("/api/sync-thunderbird", syncThunderbirdHandler);
   app.get("/api/import-mbox", importMboxHandler);
   app.post("/api/import-mbox", importMboxHandler);
   app.get("/api/import-eml-dir", importEmlDirHandler);
-  app.get("/api/folders", foldersHandler);
-  app.get("/api/custom-filters", customFiltersHandler);
-  app.post("/api/custom-filters", customFiltersHandler);
 
-  // Keep POP3 routes for backwards compatibility/fallback
-  app.post("/api/test-connection", testConnectionHandler);
-  app.post("/api/fetch-emails", fetchEmailsHandler);
-  app.post("/api/simulate-emails", simulateEmailsHandler);
+  // Start cron auto-sync in the background
+  startAutoSyncCron();
 
   // --- VITE DEV OR PRODUCTION STATIC SERVING ---
 
@@ -74,7 +157,7 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Email Ticketing System Server (Local DB Mode) running on http://localhost:${PORT}`);
+    console.log(`Email Ticketing & Automation System running on http://localhost:${PORT}`);
   });
 }
 

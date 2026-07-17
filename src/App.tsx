@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { getSeedEmails } from './seed';
 import { 
   Mail, 
   Folder, 
@@ -13,7 +12,6 @@ import {
   Calendar, 
   User, 
   Inbox, 
-  Tag, 
   SlidersHorizontal, 
   Settings, 
   Eye, 
@@ -23,81 +21,200 @@ import {
   Clock,
   ArrowRight,
   Database,
-  FolderUp
+  Plus,
+  Server,
+  Link,
+  Activity,
+  Check,
+  Zap,
+  ChevronUp
 } from 'lucide-react';
 
 interface Email {
   id?: number;
-  uid: string;
+  message_id: string;
   subject: string;
-  fromName: string;
-  fromAddress: string;
+  sender: string;
+  receiver: string;
   date: string;
-  body: string;
-  bodyHtml: string;
+  body_text: string;
+  html_body: string;
   tags: string[];
-  messageId?: string;
   category?: string;
-  subCategory?: string;
-  folderParent?: string;
-  folderChild?: string;
+  sub_category?: string;
+  folder_parent?: string;
+  folder_child?: string;
+  api_workflow_status?: string;
+  api_workflow_log?: string;
+
+  // Frontend map fallbacks
+  fromName?: string;
+  fromAddress?: string;
+}
+
+interface CustomFilter {
+  id?: number;
+  name: string;
+  match_from: string;
+  match_subject: string;
+  match_body: string;
+  action_parent: string;
+  action_child: string;
+  trigger_api?: boolean;
+}
+
+interface AppSettings {
+  pop3Host: string;
+  pop3Port: number;
+  pop3User: string;
+  pop3Pass: string;
+  citApiToken: string;
+  supabaseUrl: string;
+  supabaseKey: string;
 }
 
 export default function App() {
-  // POP3 Configuration State (defaults pre-filled)
-  const [pop3Host, setPop3Host] = useState('mail.advantagescm.com');
-  const [pop3Port, setPop3Port] = useState('995');
-  const [pop3User, setPop3User] = useState('fachrul.wisnu@advantagescm.com');
-  const [pop3Pass, setPop3Pass] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  
-  // Local MBOX Configuration State (defaults pre-filled)
-  const [mboxPath, setMboxPath] = useState('C:\\Users\\HP\\AppData\\Roaming\\Thunderbird\\Profiles\\xr2b9r9p.default-release\\Mail\\mail.advantagescm.com\\Inbox');
-  const [isImportingMbox, setIsImportingMbox] = useState(false);
-  
-  // Local EML Configuration State (defaults pre-filled)
-  const [emlDirPath, setEmlDirPath] = useState('Documents\\test mbox');
-  const [isImportingEml, setIsImportingEml] = useState(false);
-  
-  const [mboxProgress, setMboxProgress] = useState<number>(0);
-  const [mboxLogs, setMboxLogs] = useState<string[]>([]);
-  const [mboxStatus, setMboxStatus] = useState<'idle' | 'processing' | 'complete' | 'stopped' | 'error'>('idle');
-  const [mboxParsedCount, setMboxParsedCount] = useState<number>(0);
-  
-  // Connection and Fetching States
-  const [showSettings, setShowSettings] = useState(true);
-  const [isTestingConn, setIsTestingConn] = useState(false);
-  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
-  
-  const [isFetching, setIsFetching] = useState(false);
-  const [isSimulating, setIsSimulating] = useState(false);
-  const [fetchResult, setFetchResult] = useState<{ success: boolean; message: string; count: number } | null>(null);
+  // Navigation
+  const [currentMenu, setCurrentMenu] = useState<'inbox' | 'settings'>('inbox');
+  const [settingsTab, setSettingsTab] = useState<'filters' | 'api' | 'mail'>('filters');
 
-  // Email List and Selected Email States
+  // Loaders and State
   const [emails, setEmails] = useState<Email[]>([]);
   const [selectedEmail, setSelectedEmail] = useState<Email | null>(null);
-  const [selectedFolder, setSelectedFolder] = useState<string>('all'); // 'all', 'untagged', 'category:Name', 'subcategory:CatName||SubCatName'
-  
-  // Dynamic Folder Mapping State
+  const [selectedFolder, setSelectedFolder] = useState<string>('all');
   const [dynamicFolders, setDynamicFolders] = useState<{ folder_parent: string; folder_child: string; count: number }[]>([]);
   const [expandedParents, setExpandedParents] = useState<Record<string, boolean>>({});
   
-  const [isSpeedtestExpanded, setIsSpeedtestExpanded] = useState(true);
-  const [isApprovalExpanded, setIsApprovalExpanded] = useState(true);
-  
-  // Advanced Search / Filters State
-  const [showFilters, setShowFilters] = useState(false);
-  const [filters, setFilters] = useState({
-    from: '',
-    to: '', // included for UI requirement, can search in headers or simulate
-    subject: '',
-    hasWords: '',
-    dateWithin: 'all' // 'all', 'today', '7days', '30days'
+  // Custom Filters State
+  const [customFilters, setCustomFilters] = useState<CustomFilter[]>([]);
+  const [filterMsg, setFilterMsg] = useState('');
+  const [filterForm, setFilterForm] = useState<CustomFilter>({
+    name: '',
+    match_from: '',
+    match_subject: '',
+    match_body: '',
+    action_parent: '',
+    action_child: '',
+    trigger_api: false
   });
 
-  // Pane 3 Email Body Toggle (Plain vs HTML)
-  const [bodyViewMode, setBodyViewMode] = useState<'text' | 'html'>('text');
+  // Global Config Settings
+  const [appSettings, setAppSettings] = useState<AppSettings>({
+    pop3Host: 'mail.advantagescm.com',
+    pop3Port: 995,
+    pop3User: '',
+    pop3Pass: '',
+    citApiToken: '',
+    supabaseUrl: '',
+    supabaseKey: ''
+  });
+  const [saveStatus, setSaveStatus] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
 
+  // Connection/Manual sync states
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<string | null>(null);
+  const [isTestingConn, setIsTestingConn] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  // Floating Toasts
+  const [toasts, setToasts] = useState<{ id: number; title: string; message: string }[]>([]);
+
+  // Simple search filter state
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const addToast = (title: string, message: string) => {
+    const id = Date.now();
+    setToasts(prev => [...prev, { id, title, message }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 6000);
+  };
+
+  // Connect to SSE Events for Background Auto-Sync Notifications
+  useEffect(() => {
+    const eventSource = new EventSource('/api/events');
+    
+    eventSource.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        if (payload.event === 'email_synced') {
+          addToast('Email Auto-Synced & Classified', payload.data.message || 'A new ticket has arrived.');
+          loadEmails();
+        }
+      } catch (err) {
+        console.error('Error parsing SSE event:', err);
+      }
+    };
+
+    eventSource.onerror = (err) => {
+      console.warn('SSE connection disconnected. Retrying...');
+    };
+
+    return () => {
+      eventSource.close();
+    };
+  }, []);
+
+  // Fetch Settings
+  const loadSettings = async () => {
+    try {
+      const res = await fetch('/api/settings');
+      const data = await res.json();
+      if (data.success && data.settings) {
+        setAppSettings(data.settings);
+      }
+    } catch (err) {
+      console.error('Failed to load settings:', err);
+    }
+  };
+
+  // Fetch Emails
+  const loadEmails = async () => {
+    try {
+      const res = await fetch('/api/emails');
+      const data = await res.json();
+      if (data.success && data.emails) {
+        // Map raw database emails to frontend schema (e.g. fromName, fromAddress)
+        const mapped: Email[] = data.emails.map((email: any) => {
+          let fromName = '';
+          let fromAddress = email.sender || '';
+          if (email.sender && email.sender.includes('<')) {
+            const match = email.sender.match(/^(.*?)\s*<(.*?)>/);
+            if (match) {
+              fromName = match[1].trim();
+              fromAddress = match[2].trim();
+            }
+          }
+          return {
+            ...email,
+            fromName: fromName || fromAddress,
+            fromAddress: fromAddress
+          };
+        });
+
+        setEmails(mapped);
+
+        // Retain selection if valid, otherwise select the first email
+        if (mapped.length > 0) {
+          setSelectedEmail(prev => {
+            if (prev) {
+              const current = mapped.find(e => e.message_id === prev.message_id);
+              if (current) return current;
+            }
+            return mapped[0];
+          });
+        } else {
+          setSelectedEmail(null);
+        }
+      }
+      await loadFolders();
+    } catch (err) {
+      console.error('Failed to load emails:', err);
+    }
+  };
+
+  // Load dynamic folder list
   const loadFolders = async () => {
     try {
       const res = await fetch('/api/folders');
@@ -107,52 +224,20 @@ export default function App() {
         setExpandedParents(prev => {
           const next = { ...prev };
           data.folders.forEach((f: any) => {
-            if (next[f.folder_parent] === undefined) {
-              next[f.folder_parent] = true; // expanded by default
+            const parent = f.folder_parent || 'Lainnya';
+            if (next[parent] === undefined) {
+              next[parent] = true; // expanded by default
             }
           });
           return next;
         });
       }
     } catch (err) {
-      console.error('Failed to load dynamic folders:', err);
+      console.error('Failed to load folders:', err);
     }
   };
 
-  // Trigger loading initial emails from local SQLite/JSON server database
-  const loadEmails = async () => {
-    try {
-      const res = await fetch('/api/emails');
-      const data = await res.json();
-      if (data.success && data.emails) {
-        setEmails(data.emails);
-        // Automatically select the first email if none is selected
-        if (data.emails.length > 0 && !selectedEmail) {
-          setSelectedEmail(data.emails[0]);
-        }
-      }
-      await loadFolders();
-    } catch (err) {
-      console.error('Failed to load emails from local database API:', err);
-    }
-  };
-
-  useEffect(() => {
-    loadEmails();
-  }, []);
-
-  // Custom Filters State & Handlers
-  const [customFilters, setCustomFilters] = useState<any[]>([]);
-  const [filterForm, setFilterForm] = useState({
-    name: '',
-    match_from: '',
-    match_subject: '',
-    match_body: '',
-    action_parent: '',
-    action_child: ''
-  });
-  const [filterMsg, setFilterMsg] = useState('');
-
+  // Load custom filters
   const loadCustomFilters = async () => {
     try {
       const res = await fetch('/api/custom-filters');
@@ -161,10 +246,93 @@ export default function App() {
         setCustomFilters(data.filters);
       }
     } catch (err) {
-      console.error('Failed to load custom filters:', err);
+      console.error('Failed to load filters:', err);
     }
   };
 
+  useEffect(() => {
+    loadSettings();
+    loadEmails();
+    loadCustomFilters();
+  }, []);
+
+  // Save Config Settings
+  const handleSaveSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaveStatus('Saving config...');
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(appSettings)
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSaveStatus('Settings updated successfully!');
+        addToast('Settings Updated', 'Email Server and API settings saved securely.');
+        setTimeout(() => setSaveStatus(''), 4000);
+      } else {
+        setSaveStatus('Failed to update: ' + data.message);
+      }
+    } catch (err: any) {
+      setSaveStatus('Save Error: ' + err.message);
+    }
+  };
+
+  // POP3 connection diagnostic
+  const handleTestConnection = async () => {
+    setIsTestingConn(true);
+    setTestResult(null);
+    try {
+      const res = await fetch('/api/test-connection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host: appSettings.pop3Host,
+          port: appSettings.pop3Port,
+          username: appSettings.pop3User,
+          password: appSettings.pop3Pass
+        })
+      });
+      const data = await res.json();
+      setTestResult({
+        success: data.success,
+        message: data.message
+      });
+    } catch (err: any) {
+      setTestResult({
+        success: false,
+        message: 'Network connection failed: ' + err.message
+      });
+    } finally {
+      setIsTestingConn(false);
+    }
+  };
+
+  // Manual Trigger Sync
+  const handleManualSync = async () => {
+    setIsSyncing(true);
+    setSyncStatus('Connecting to POP3 Server...');
+    try {
+      const res = await fetch('/api/fetch-emails', { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        setSyncStatus(`Sync successful! Imported ${data.count} new emails.`);
+        addToast('POP3 Sync Finished', `Found and cataloged ${data.count} new items.`);
+        await loadEmails();
+      } else {
+        setSyncStatus('Sync Alert: ' + data.message);
+        addToast('Sync Alert', data.message);
+      }
+    } catch (err: any) {
+      setSyncStatus('Network Error: ' + err.message);
+    } finally {
+      setIsSyncing(false);
+      setTimeout(() => setSyncStatus(null), 8000);
+    }
+  };
+
+  // Add/Edit Filter Rule
   const handleSaveFilter = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!filterForm.name.trim() || !filterForm.action_parent.trim() || !filterForm.action_child.trim()) {
@@ -179,25 +347,30 @@ export default function App() {
       });
       const data = await res.json();
       if (data.success) {
-        setFilterMsg('Filter saved successfully!');
+        setFilterMsg('Filter rule saved successfully!');
         setFilterForm({
           name: '',
           match_from: '',
           match_subject: '',
           match_body: '',
           action_parent: '',
-          action_child: ''
+          action_child: '',
+          trigger_api: false
         });
+        addToast('Rule Saved', 'Dynamic workflow tag filter registered.');
         await loadCustomFilters();
+        await loadEmails(); // reclassify
       } else {
-        setFilterMsg('Error saving filter: ' + data.message);
+        setFilterMsg('Failed to save: ' + data.message);
       }
     } catch (err: any) {
       setFilterMsg('Error: ' + err.message);
     }
   };
 
+  // Delete Filter Rule
   const handleDeleteFilter = async (id: number) => {
+    if (!confirm('Are you sure you want to delete this custom routing filter?')) return;
     try {
       const res = await fetch('/api/custom-filters', {
         method: 'POST',
@@ -206,389 +379,55 @@ export default function App() {
       });
       const data = await res.json();
       if (data.success) {
+        addToast('Rule Deleted', 'Dynamic filter removed.');
         await loadCustomFilters();
       }
     } catch (err) {
-      console.error('Failed to delete filter:', err);
+      console.error('Failed to delete rule:', err);
     }
   };
 
-  useEffect(() => {
-    loadCustomFilters();
-  }, []);
-
-  // Sync selection view mode when email changes
-  useEffect(() => {
-    if (selectedEmail) {
-      if (selectedEmail.bodyHtml) {
-        setBodyViewMode('html');
-      } else {
-        setBodyViewMode('text');
-      }
-    }
-  }, [selectedEmail]);
-
-  // Test POP3 Connection Handler
-  const handleTestConnection = async () => {
-    setIsTestingConn(true);
-    setTestResult(null);
-    try {
-      const res = await fetch('/api/test-connection', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          host: pop3Host,
-          port: pop3Port,
-          username: pop3User,
-          password: pop3Pass
-        })
-      });
-      const data = await res.json();
-      setTestResult({
-        success: data.success,
-        message: data.message
-      });
-    } catch (err: any) {
-      setTestResult({
-        success: false,
-        message: `Connection failed: ${err.message || String(err)}`
-      });
-    } finally {
-      setIsTestingConn(false);
-    }
-  };
-
-  // Sync POP3 Handler
-  const handleSyncPop3 = async () => {
-    setIsFetching(true);
-    setFetchResult(null);
-    try {
-      const res = await fetch('/api/fetch-emails', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          host: pop3Host,
-          port: pop3Port,
-          username: pop3User,
-          password: pop3Pass
-        })
-      });
-      const data = await res.json();
-      setFetchResult({
-        success: data.success,
-        message: data.message,
-        count: data.fetchedCount || 0
-      });
-      
-      if (data.success) {
-        await loadEmails();
-      }
-    } catch (err: any) {
-      setFetchResult({
-        success: false,
-        message: `Sync error: ${err.message || String(err)}`,
-        count: 0
-      });
-    } finally {
-      setIsFetching(false);
-    }
-  };
-
-  // Import Local MBOX Handler with SSE Streaming Progress using EventSource
-  const handleImportMbox = async () => {
-    setIsImportingMbox(true);
-    setMboxProgress(0);
-    setMboxLogs(['Connecting to MBOX stream...']);
-    setMboxStatus('processing');
-    setMboxParsedCount(0);
-    setFetchResult(null);
-
-    let currentParsedCount = 0;
-
-    try {
-      const url = `/api/import-mbox?customPath=${encodeURIComponent(mboxPath)}`;
-      const eventSource = new EventSource(url);
-
-      eventSource.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          
-          if (data.percentage !== undefined) {
-            setMboxProgress(data.percentage);
-          }
-          if (data.parsedCount !== undefined) {
-            currentParsedCount = data.parsedCount;
-            setMboxParsedCount(data.parsedCount);
-          }
-          if (data.log) {
-            setMboxLogs(prev => [...prev, data.log]);
-          }
-          
-          if (data.status === 'complete') {
-            setMboxStatus('complete');
-            setFetchResult({
-              success: true,
-              message: data.log || 'MBOX Historical import completed successfully!',
-              count: data.parsedCount || 0
-            });
-            eventSource.close();
-            setIsImportingMbox(false);
-            loadEmails();
-          } else if (data.status === 'error') {
-            setMboxStatus('error');
-            setFetchResult({
-              success: false,
-              message: data.log || 'MBOX Historical import failed.',
-              count: data.parsedCount || 0
-            });
-            eventSource.close();
-            setIsImportingMbox(false);
-            loadEmails();
-          }
-        } catch (e) {
-          console.warn('Failed parsing SSE message:', e);
-        }
-      };
-
-      eventSource.onerror = (err) => {
-        console.error('MBOX EventSource stream error:', err);
-        setMboxStatus('stopped');
-        setMboxLogs(prev => [...prev, '[ERROR] EventSource connection closed. Data up to this point is saved.']);
-        setFetchResult({
-          success: false,
-          message: 'MBOX import connection closed or error occurred.',
-          count: currentParsedCount
-        });
-        eventSource.close();
-        setIsImportingMbox(false);
-        loadEmails();
-      };
-
-    } catch (err: any) {
-      console.error('MBOX import stream error:', err);
-      setMboxStatus('stopped');
-      setMboxLogs(prev => [...prev, `[FATAL ERROR] Import stopped: ${err.message || String(err)}`]);
-      setFetchResult({
-        success: false,
-        message: `MBOX import stopped: ${err.message || String(err)}`,
-        count: currentParsedCount
-      });
-      setIsImportingMbox(false);
-    }
-  };
-
-  // Local EML Batch Import Handler (SSE Stream)
-  const handleImportEmlDir = async () => {
-    if (!emlDirPath.trim()) {
-      alert('Please specify a valid EML folder directory path.');
-      return;
-    }
-    
-    setIsImportingMbox(true); // locks other buttons
-    setIsImportingEml(true);
-    setMboxStatus('processing');
-    setMboxProgress(0);
-    setMboxLogs(['[START] Connecting to EML folder import stream...']);
-    setMboxParsedCount(0);
-    setFetchResult(null);
-
-    let currentParsedCount = 0;
-
-    try {
-      const url = `/api/import-eml-dir?path=${encodeURIComponent(emlDirPath)}`;
-      const eventSource = new EventSource(url);
-
-      eventSource.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          
-          if (data.percentage !== undefined) {
-            setMboxProgress(data.percentage);
-          }
-          if (data.parsedCount !== undefined) {
-            currentParsedCount = data.parsedCount;
-            setMboxParsedCount(data.parsedCount);
-          }
-          if (data.log) {
-            setMboxLogs(prev => [...prev, data.log]);
-          }
-          
-          if (data.status === 'complete') {
-            setMboxStatus('complete');
-            setFetchResult({
-              success: true,
-              message: data.log || 'EML Batch import completed successfully!',
-              count: data.parsedCount || 0
-            });
-            eventSource.close();
-            setIsImportingMbox(false);
-            setIsImportingEml(false);
-            loadEmails();
-          } else if (data.status === 'error') {
-            setMboxStatus('error');
-            setFetchResult({
-              success: false,
-              message: data.log || 'EML Batch import failed.',
-              count: data.parsedCount || 0
-            });
-            eventSource.close();
-            setIsImportingMbox(false);
-            setIsImportingEml(false);
-            loadEmails();
-          }
-        } catch (e) {
-          console.warn('Failed parsing SSE message:', e);
-        }
-      };
-
-      eventSource.onerror = (err) => {
-        console.error('EML EventSource stream error:', err);
-        setMboxStatus('stopped');
-        setMboxLogs(prev => [...prev, '[ERROR] EventSource connection closed. Data up to this point is saved.']);
-        setFetchResult({
-          success: false,
-          message: 'EML import connection closed or error occurred.',
-          count: currentParsedCount
-        });
-        eventSource.close();
-        setIsImportingMbox(false);
-        setIsImportingEml(false);
-        loadEmails();
-      };
-
-    } catch (err: any) {
-      console.error('EML import stream error:', err);
-      setMboxStatus('stopped');
-      setMboxLogs(prev => [...prev, `[FATAL ERROR] Import stopped: ${err.message || String(err)}`]);
-      setFetchResult({
-        success: false,
-        message: `EML import stopped: ${err.message || String(err)}`,
-        count: currentParsedCount
-      });
-      setIsImportingMbox(false);
-      setIsImportingEml(false);
-    }
-  };
-
-  // Simulate Emails Handler
-  const handleSimulateEmails = async () => {
-    setIsSimulating(true);
-    setFetchResult(null);
-    try {
-      const res = await fetch('/api/simulate-emails', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
-      });
-      const data = await res.json();
-      setFetchResult({
-        success: data.success,
-        message: data.message,
-        count: data.fetchedCount || 0
-      });
-      
-      if (data.success) {
-        await loadEmails();
-      }
-    } catch (err: any) {
-      setFetchResult({
-        success: false,
-        message: `Simulation error: ${err.message || String(err)}`,
-        count: 0
-      });
-    } finally {
-      setIsSimulating(false);
-    }
-  };
-
-  // Clear Local Database Cache
+  // Clear Emails Database Cache
   const handleClearDatabase = async () => {
-    if (confirm('Are you sure you want to clear all cached emails from your local database? This cannot be undone.')) {
+    if (confirm('Are you sure you want to completely flush your mail list cache? (SQLite and Supabase)')) {
       try {
         const res = await fetch('/api/clear-emails', { method: 'POST' });
         const data = await res.json();
         if (data.success) {
+          addToast('Inbox Flushed', 'Cached tickets cleared.');
           setEmails([]);
           setSelectedEmail(null);
-          alert('Local database cache cleared successfully.');
+          await loadFolders();
         }
       } catch (err) {
-        alert('Failed to clear database cache on server.');
+        console.error('Failed to clear emails:', err);
       }
     }
   };
 
-  // Generate lists of dynamic Speedtest and Approval branches/types
-  const getSpeedtestBranches = () => {
-    const branches = new Set<string>();
-    emails.forEach(email => {
-      if (email.tags.includes('Speedtest')) {
-        // Find other tags besides "Speedtest"
-        email.tags.forEach(tag => {
-          if (tag !== 'Speedtest' && tag !== 'General') {
-            branches.add(tag);
-          }
-        });
-      }
-    });
-    return Array.from(branches).sort();
-  };
-
-  const getApprovalTypes = () => {
-    const types = new Set<string>();
-    emails.forEach(email => {
-      if (email.tags.includes('Approval')) {
-        email.tags.forEach(tag => {
-          if (tag !== 'Approval' && tag !== 'Other') {
-            types.add(tag);
-          }
-        });
-      }
-    });
-    return Array.from(types).sort();
-  };
-
-  const speedtestBranches = getSpeedtestBranches();
-  const approvalTypes = getApprovalTypes();
-
-  // Filtering emails for Pane 2
+  // Filters logic helper
   const getFilteredEmails = () => {
     return emails.filter(email => {
       // 1. Folder filter
       if (selectedFolder === 'all') {
-        // Show everything
+        // Show all
       } else if (selectedFolder.startsWith('parent:')) {
         const parent = selectedFolder.substring('parent:'.length);
-        if (email.folderParent !== parent) return false;
+        if ((email.folder_parent || 'Lainnya') !== parent) return false;
       } else if (selectedFolder.startsWith('child:')) {
-        const parts = selectedFolder.substring('child:'.length).split('||');
+        const parts = selectedFolder.substring('child:'.length).split('|||');
         const parent = parts[0];
         const child = parts[1];
-        if (email.folderParent !== parent || email.folderChild !== child) return false;
+        if ((email.folder_parent || 'Lainnya') !== parent || (email.folder_child || 'Uncategorized') !== child) return false;
       }
 
-      // 2. Advanced search filters
-      if (filters.from && !email.fromName.toLowerCase().includes(filters.from.toLowerCase()) && !email.fromAddress.toLowerCase().includes(filters.from.toLowerCase())) {
-        return false;
-      }
-      if (filters.subject && !email.subject.toLowerCase().includes(filters.subject.toLowerCase())) {
-        return false;
-      }
-      if (filters.hasWords) {
-        const word = filters.hasWords.toLowerCase();
-        const matchesSubj = email.subject.toLowerCase().includes(word);
-        const matchesBody = email.body.toLowerCase().includes(word);
-        const matchesFrom = email.fromName.toLowerCase().includes(word) || email.fromAddress.toLowerCase().includes(word);
-        if (!matchesSubj && !matchesBody && !matchesFrom) return false;
-      }
-      if (filters.dateWithin && filters.dateWithin !== 'all') {
-        const emailDate = new Date(email.date);
-        const now = new Date();
-        const diffTime = Math.abs(now.getTime() - emailDate.getTime());
-        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-        
-        if (filters.dateWithin === 'today' && diffDays > 1) return false;
-        if (filters.dateWithin === '7days' && diffDays > 7) return false;
-        if (filters.dateWithin === '30days' && diffDays > 30) return false;
+      // 2. Search Query filter
+      if (searchQuery.trim()) {
+        const query = searchQuery.toLowerCase();
+        const subMatch = (email.subject || '').toLowerCase().includes(query);
+        const fromMatch = (email.sender || '').toLowerCase().includes(query);
+        const textMatch = (email.body_text || '').toLowerCase().includes(query);
+        if (!subMatch && !fromMatch && !textMatch) return false;
       }
 
       return true;
@@ -597,7 +436,6 @@ export default function App() {
 
   const filteredEmails = getFilteredEmails();
 
-  // Helper to format timestamps elegantly
   const formatTimestamp = (isoString: string) => {
     try {
       const date = new Date(isoString);
@@ -613,903 +451,899 @@ export default function App() {
   };
 
   const getInitials = (name: string) => {
-    if (!name) return '??';
-    const parts = name.trim().split(/\s+/);
+    if (!name) return 'EM';
+    const clean = name.replace(/<.*?>/, '').trim();
+    const parts = clean.split(/\s+/);
     if (parts.length >= 2) {
       return (parts[0][0] + parts[1][0]).toUpperCase();
     }
-    return name.slice(0, 2).toUpperCase();
-  };
-
-  const getTagBadgeStyles = (tag: string) => {
-    switch(tag) {
-      case 'Speedtest':
-        return 'bg-amber-100 text-amber-800 font-bold border-transparent';
-      case 'Approval':
-        return 'bg-purple-100 text-purple-800 font-bold border-transparent';
-      case 'UAT':
-        return 'bg-blue-100 text-blue-800 font-bold border-transparent';
-      case 'FSD':
-        return 'bg-orange-100 text-orange-800 font-bold border-transparent';
-      case 'SIT':
-        return 'bg-emerald-100 text-emerald-800 font-bold border-transparent';
-      case 'Other':
-      case 'General':
-        return 'bg-slate-100 text-slate-500 font-bold border-transparent';
-      default:
-        // dynamic branch names (e.g. Purwokerto, Senen)
-        return 'bg-slate-100 text-slate-600 font-bold border-transparent';
-    }
+    return clean.slice(0, 2).toUpperCase();
   };
 
   return (
-    <div className="flex flex-col h-screen w-full bg-[#F9FAFB] font-sans text-slate-900 overflow-hidden" id="main_app_container">
+    <div className="flex h-screen w-full bg-[#FAFBFD] font-sans text-slate-800 overflow-hidden" id="applet_canvas">
       
-      {/* GLOBAL SYSTEM BAR / TOP HEADER */}
-      <header className="flex items-center justify-between px-6 py-3.5 bg-white border-b border-slate-200 shrink-0" id="header_pane">
-        <div className="flex items-center space-x-3">
-          <div className="p-2.5 bg-blue-600 rounded-lg text-white">
-            <Mail className="h-5 w-5" />
+      {/* 1. LEFT-MOST NAVIGATION RAIL (Inbox vs Settings) */}
+      <aside className="w-[72px] bg-slate-900 flex flex-col items-center py-6 justify-between text-white shrink-0 z-10" id="nav_rail">
+        <div className="flex flex-col items-center space-y-6 w-full">
+          <div className="p-3 bg-blue-600 rounded-2xl shadow-lg shadow-blue-500/20 text-white cursor-pointer hover:scale-105 transition-transform">
+            <Zap className="h-6 w-6 text-white" />
           </div>
-          <div>
-            <h1 className="text-lg font-bold tracking-tight text-slate-800 flex items-center gap-1.5">
-              GA NGERTI TEKNIS
-            </h1>
-            <p className="text-[11px] text-slate-400 font-mono">KONTOOOPPPPP</p>
-          </div>
-        </div>
-        
-        <div className="flex items-center space-x-3">
+          
+          <div className="w-8 border-b border-slate-800 my-1"></div>
+
+          {/* Inbox Nav button */}
           <button 
-            onClick={() => setShowSettings(!showSettings)}
-            className={`flex items-center space-x-1.5 px-3 py-1.5 rounded text-xs font-semibold border transition-all cursor-pointer ${
-              showSettings 
-                ? 'bg-blue-50 text-blue-700 border-blue-200' 
-                : 'bg-white text-slate-600 hover:text-slate-900 border-slate-200 hover:border-slate-300'
+            onClick={() => setCurrentMenu('inbox')}
+            className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
+              currentMenu === 'inbox' 
+                ? 'bg-slate-800 text-blue-400 font-bold' 
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
             }`}
+            title="Inbox"
           >
-            <Settings className="h-3.5 w-3.5" />
-            <span>Path Settings</span>
+            <Inbox className="h-5.5 w-5.5" />
+            <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
+              Tickets Inbox
+            </span>
           </button>
-          
+
+          {/* Settings Nav button */}
           <button 
-            onClick={handleClearDatabase}
-            className="flex items-center space-x-1.5 px-3 py-1.5 bg-white text-rose-600 hover:text-rose-750 hover:bg-rose-50 border border-slate-200 hover:border-rose-200 rounded text-xs font-semibold transition-all cursor-pointer"
-            title="Clear all stored emails"
+            onClick={() => setCurrentMenu('settings')}
+            className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
+              currentMenu === 'settings' 
+                ? 'bg-slate-800 text-blue-400 font-bold' 
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+            }`}
+            title="Settings"
           >
-            <Trash2 className="h-3.5 w-3.5" />
-            <span>Clear Cache</span>
+            <Settings className="h-5.5 w-5.5" />
+            <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
+              Workflow Settings
+            </span>
           </button>
         </div>
-      </header>
 
-      {/* THREE-PANE LAYOUT BODY */}
-      <div className="flex flex-row flex-1 overflow-hidden w-full" id="workspace_panes">
+        <div className="flex flex-col items-center space-y-4 w-full text-slate-500 font-mono text-[9px]">
+          <span className="font-bold">v2.0</span>
+        </div>
+      </aside>
+
+      {/* 2. MAIN WORKSPACE */}
+      <main className="flex flex-col flex-1 overflow-hidden" id="workspace_container">
         
-        {/* PANE 1: LEFT SIDEBAR - CONNECTION CONTROLS & VIRTUAL FOLDERS */}
-        <aside className="w-80 border-r border-slate-200 bg-white flex flex-col overflow-y-auto shrink-0 select-none" id="pane_left">
-          
-          {/* POP3 Server Config Panel */}
-          {showSettings && (
-            <div className="p-4 bg-slate-50 border-b border-slate-200" id="pop3_settings_panel">
-              <h3 className="text-[10px] font-bold text-slate-400 tracking-wider uppercase mb-3 flex items-center justify-between">
-                <span>POP3 Configuration</span>
-                <span className="text-[10px] text-blue-600 bg-blue-50 px-2 py-0.5 rounded font-mono font-bold">Secure TLS</span>
-              </h3>
-              
-              <div className="space-y-2 text-xs">
-                <div>
-                  <label className="block text-slate-500 mb-0.5 font-semibold text-[10px]">POP3 Server Host</label>
-                  <input 
-                    type="text"
-                    value={pop3Host}
-                    onChange={(e) => setPop3Host(e.target.value)}
-                    className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded text-xs text-slate-700 font-mono focus:outline-none focus:border-blue-500 transition-colors"
-                  />
-                </div>
-
-                <div className="grid grid-cols-3 gap-2">
-                  <div className="col-span-2">
-                    <label className="block text-slate-500 mb-0.5 font-semibold text-[10px]">Email / Username</label>
-                    <input 
-                      type="text"
-                      value={pop3User}
-                      onChange={(e) => setPop3User(e.target.value)}
-                      className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded text-xs text-slate-700 font-mono focus:outline-none focus:border-blue-500 transition-colors"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-slate-500 mb-0.5 font-semibold text-[10px]">Port</label>
-                    <input 
-                      type="text"
-                      value={pop3Port}
-                      onChange={(e) => setPop3Port(e.target.value)}
-                      className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded text-xs text-slate-700 font-mono focus:outline-none focus:border-blue-500 transition-colors text-center"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-slate-500 mb-0.5 font-semibold text-[10px]">Password</label>
-                  <div className="relative">
-                    <input 
-                      type={showPassword ? "text" : "password"}
-                      value={pop3Pass}
-                      placeholder="••••••••"
-                      onChange={(e) => setPop3Pass(e.target.value)}
-                      className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded text-xs text-slate-700 font-mono focus:outline-none focus:border-blue-500 transition-colors pr-8"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowPassword(!showPassword)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
-                    >
-                      {showPassword ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                    </button>
-                  </div>
-                </div>
-
-                {/* Connection Controls Buttons */}
-                <div className="grid grid-cols-2 gap-2 pt-2">
-                  <button
-                    onClick={handleTestConnection}
-                    disabled={isTestingConn || isFetching}
-                    className="flex items-center justify-center gap-1.5 py-2 px-2.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 hover:border-slate-300 rounded-lg text-[11px] font-bold transition-all disabled:opacity-50 cursor-pointer"
-                  >
-                    {isTestingConn ? <RefreshCw className="h-3 w-3 animate-spin text-slate-500" /> : null}
-                    <span>Test Connection</span>
-                  </button>
-
-                  <button
-                    onClick={handleSyncPop3}
-                    disabled={isFetching || isTestingConn}
-                    className="flex items-center justify-center gap-1.5 py-2 px-2.5 bg-blue-600 text-white rounded-lg text-[11px] font-bold hover:bg-blue-700 disabled:bg-blue-400 transition-all shadow-sm cursor-pointer"
-                  >
-                    {isFetching ? <RefreshCw className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                    <span>Sync POP3</span>
-                  </button>
-                </div>
-
-                {/* Simulation backup button for quick testing */}
-                <div className="pt-1 border-t border-slate-200/50 mt-1">
-                  <button
-                    onClick={handleSimulateEmails}
-                    disabled={isSimulating || isFetching}
-                    className="w-full flex items-center justify-center gap-1.5 py-1.5 px-2 bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-800 rounded text-[10px] font-bold transition-all cursor-pointer"
-                    title="Mock inbound emails for testing filters"
-                  >
-                    {isSimulating ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Mail className="h-3 w-3" />}
-                    <span>Simulate Local Inbound</span>
-                  </button>
-                </div>
-
-                {/* Local MBOX Import Section */}
-                <div className="pt-2 border-t border-slate-200/50 mt-1.5 space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <label className="block text-slate-500 font-semibold text-[10px]">Local MBOX File Path</label>
-                    <span className="text-[9px] text-slate-400 font-mono">Thunderbird</span>
-                  </div>
-                  <textarea 
-                    rows={2}
-                    value={mboxPath}
-                    onChange={(e) => setMboxPath(e.target.value)}
-                    disabled={isImportingMbox}
-                    className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-[10px] text-slate-700 font-mono focus:outline-none focus:border-blue-500 transition-colors resize-none leading-normal disabled:bg-slate-50 disabled:text-slate-500"
-                    placeholder="Path to Thunderbird Inbox file"
-                  />
-                  <button
-                    onClick={handleImportMbox}
-                    disabled={isImportingMbox || isFetching}
-                    className="w-full flex items-center justify-center gap-1.5 py-1.5 px-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded text-[11px] font-bold transition-all shadow-sm cursor-pointer disabled:bg-indigo-400 disabled:cursor-not-allowed"
-                    title="Import historical emails directly from local Thunderbird Inbox"
-                  >
-                    {isImportingMbox && !isImportingEml ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Database className="h-3 w-3" />}
-                    <span>{isImportingMbox && !isImportingEml ? `Importing MBOX... (${mboxProgress}%)` : "Import Old History (Local MBOX)"}</span>
-                  </button>
-                </div>
-
-                {/* Local EML Folder Import Section */}
-                <div className="pt-2 border-t border-slate-200/50 mt-1.5 space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <label className="block text-slate-500 font-semibold text-[10px]">Local .EML Folder Path</label>
-                    <span className="text-[9px] text-slate-400 font-mono">Batch .eml</span>
-                  </div>
-                  <input 
-                    type="text"
-                    value={emlDirPath}
-                    onChange={(e) => setEmlDirPath(e.target.value)}
-                    disabled={isImportingMbox}
-                    className="w-full px-2 py-1 bg-slate-50 border border-slate-200 rounded text-[10px] text-slate-700 font-mono focus:outline-none focus:border-blue-500 transition-colors disabled:bg-slate-50 disabled:text-slate-400"
-                    placeholder="e.g. Documents/test mbox"
-                  />
-                  <button
-                    onClick={handleImportEmlDir}
-                    disabled={isImportingMbox || isFetching}
-                    className="w-full flex items-center justify-center gap-1.5 py-1.5 px-2 bg-violet-600 hover:bg-violet-700 text-white rounded text-[11px] font-bold transition-all shadow-sm cursor-pointer disabled:bg-violet-400 disabled:cursor-not-allowed"
-                    title="Import EML files from a local directory"
-                  >
-                    {isImportingEml ? <RefreshCw className="h-3 w-3 animate-spin" /> : <FolderUp className="h-3.5 w-3.5" />}
-                    <span>{isImportingEml ? `Importing EML... (${mboxProgress}%)` : "Import Folder (Batch .EML)"}</span>
-                  </button>
-
-                  {/* Real-time SSE Progress bar & Log output */}
-                  {(mboxStatus !== 'idle' || mboxLogs.length > 0) && (
-                    <div className="mt-2 space-y-1.5 p-2 bg-slate-900 rounded border border-slate-800 text-[10px] text-slate-300">
-                      <div className="flex items-center justify-between font-mono text-[9px] text-slate-400">
-                        <span>Status: <span className={`font-bold uppercase ${
-                          mboxStatus === 'processing' ? 'text-blue-400 animate-pulse' :
-                          mboxStatus === 'complete' ? 'text-emerald-400' :
-                          mboxStatus === 'stopped' ? 'text-amber-400' : 'text-rose-400'
-                        }`}>{mboxStatus}</span></span>
-                        <span>{mboxParsedCount} saved</span>
-                      </div>
-
-                      {/* Progress Bar Container */}
-                      <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                        <div 
-                          className={`h-full transition-all duration-300 ${
-                            mboxStatus === 'complete' ? 'bg-emerald-500' : 
-                            mboxStatus === 'error' ? 'bg-rose-500' : 'bg-indigo-500'
-                          }`}
-                          style={{ width: `${mboxProgress}%` }}
-                        />
-                      </div>
-                      <div className="flex justify-between text-[8px] font-mono text-slate-500">
-                        <span>0%</span>
-                        <span>{mboxProgress}% read</span>
-                        <span>100%</span>
-                      </div>
-
-                      {/* Terminal-style scroll log */}
-                      <div className="font-mono bg-slate-950 p-1.5 rounded border border-slate-800 h-24 overflow-y-auto space-y-1 select-text scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-transparent">
-                        {mboxLogs.map((log, index) => (
-                          <div key={index} className="leading-tight text-[8px] border-b border-slate-900/50 pb-0.5 last:border-none text-slate-300">
-                            <span className="text-slate-500 select-none mr-1">&gt;</span>
-                            {log}
-                          </div>
-                        ))}
-                        {/* Auto scroll helper element */}
-                        <div ref={(el) => { if (el) el.scrollIntoView({ behavior: 'smooth' }); }} />
-                      </div>
-
-                      {mboxStatus === 'stopped' && (
-                        <div className="text-[9px] text-amber-300 font-semibold bg-amber-950/40 p-1 rounded border border-amber-900/50 mt-1 leading-snug">
-                          Import Stopped at {mboxProgress}% - Data up to this point is saved.
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {testResult && (
-                <div className={`mt-2.5 p-2 rounded text-[11px] flex flex-col space-y-0.5 border ${
-                  testResult.success 
-                    ? 'bg-emerald-50 text-emerald-800 border-emerald-200' 
-                    : 'bg-rose-50 text-rose-850 border-rose-200'
-                }`}>
-                  <div className="flex items-start space-x-1.5">
-                    {testResult.success ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 shrink-0 mt-0.5" /> : <AlertCircle className="h-3.5 w-3.5 text-rose-600 shrink-0 mt-0.5" />}
-                    <div className="flex-1">
-                      <p className="font-bold leading-none">{testResult.success ? "Connection Success" : "Connection Failed"}</p>
-                      <p className="opacity-90 leading-normal mt-0.5 text-[10px]">{testResult.message}</p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {fetchResult && (
-                <div className={`mt-2.5 p-2 rounded text-[11px] flex flex-col space-y-0.5 border ${
-                  fetchResult.success 
-                    ? 'bg-blue-50 text-blue-800 border-blue-200' 
-                    : 'bg-rose-50 text-rose-850 border-rose-200'
-                }`}>
-                  <div className="flex items-start space-x-1.5">
-                    {fetchResult.success ? <CheckCircle2 className="h-3.5 w-3.5 text-blue-600 shrink-0 mt-0.5" /> : <AlertCircle className="h-3.5 w-3.5 text-rose-600 shrink-0 mt-0.5" />}
-                    <div className="flex-1">
-                      <p className="font-bold leading-none">{fetchResult.success ? "Sync Completed" : "Sync Failed"}</p>
-                      <p className="opacity-90 leading-normal mt-0.5 text-[10px]">{fetchResult.message}</p>
-                      {fetchResult.count > 0 && (
-                        <p className="text-[10px] text-blue-700 font-bold mt-0.5">Scanned & Added: {fetchResult.count} new</p>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Custom Rule Engine Section */}
-              <div className="pt-3 border-t border-slate-200 mt-2.5 space-y-2">
-                <div className="flex items-center justify-between">
-                  <label className="block text-slate-500 font-bold text-[10px] uppercase tracking-wider">Rule Engine / Custom Filters</label>
-                  <span className="text-[9px] text-slate-400 font-mono">SQLite DB Engine</span>
-                </div>
-
-                {/* List existing custom filters */}
-                {customFilters.length > 0 && (
-                  <div className="space-y-1.5 max-h-48 overflow-y-auto border border-slate-200 rounded p-1.5 bg-slate-50">
-                    {customFilters.map((filter) => (
-                      <div key={filter.id} className="p-1.5 bg-white rounded border border-slate-150 text-[10px] flex items-start justify-between">
-                        <div className="space-y-0.5 flex-1 pr-1 select-text">
-                          <p className="font-bold text-slate-700">{filter.name}</p>
-                          <div className="text-[9px] text-slate-500 space-y-0.5 font-mono">
-                            {filter.match_from && <p><span className="text-slate-400">From:</span> {filter.match_from}</p>}
-                            {filter.match_subject && <p><span className="text-slate-400">Subject:</span> {filter.match_subject}</p>}
-                            {filter.match_body && <p><span className="text-slate-400">Body:</span> {filter.match_body}</p>}
-                            <div className="pt-1 text-[9px] text-blue-600 font-bold flex items-center gap-1">
-                              <span>Folder Parent:</span> <span className="bg-blue-50 px-1 py-0.2 rounded">{filter.action_parent}</span>
-                            </div>
-                            <div className="text-[9px] text-blue-600 font-bold flex items-center gap-1">
-                              <span>Folder Child:</span> <span className="bg-blue-50 px-1 py-0.2 rounded">{filter.action_child}</span>
-                            </div>
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteFilter(filter.id)}
-                          className="text-rose-500 hover:text-rose-700 p-1 cursor-pointer hover:bg-rose-50 rounded"
-                          title="Delete rule"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* Form to add a new custom filter */}
-                <form onSubmit={handleSaveFilter} className="space-y-2 p-2 bg-slate-100 rounded border border-slate-200 text-[10px]">
-                  <p className="font-bold text-slate-700 text-[9px] uppercase">Add New Custom Filter</p>
-                  
-                  <div>
-                    <label className="block text-slate-500 font-semibold mb-0.5">Filter Name</label>
-                    <input 
-                      type="text"
-                      value={filterForm.name}
-                      onChange={(e) => setFilterForm({ ...filterForm, name: e.target.value })}
-                      placeholder="e.g. FPS Monitor"
-                      className="w-full px-2 py-1 bg-white border border-slate-200 rounded focus:outline-none focus:border-blue-500"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-1.5">
-                    <div>
-                      <label className="block text-slate-500 font-semibold mb-0.5">Match Sender (From)</label>
-                      <input 
-                        type="text"
-                        value={filterForm.match_from}
-                        onChange={(e) => setFilterForm({ ...filterForm, match_from: e.target.value })}
-                        placeholder="e.g. noc@"
-                        className="w-full px-2 py-1 bg-white border border-slate-200 rounded focus:outline-none focus:border-blue-500"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-slate-500 font-semibold mb-0.5">Match Subject</label>
-                      <input 
-                        type="text"
-                        value={filterForm.match_subject}
-                        onChange={(e) => setFilterForm({ ...filterForm, match_subject: e.target.value })}
-                        placeholder="e.g. FPS"
-                        className="w-full px-2 py-1 bg-white border border-slate-200 rounded focus:outline-none focus:border-blue-500"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-slate-500 font-semibold mb-0.5">Match Body Text</label>
-                    <input 
-                      type="text"
-                      value={filterForm.match_body}
-                      onChange={(e) => setFilterForm({ ...filterForm, match_body: e.target.value })}
-                      placeholder="e.g. signoff requested"
-                      className="w-full px-2 py-1 bg-white border border-slate-200 rounded focus:outline-none focus:border-blue-500"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-1.5">
-                    <div>
-                      <label className="block text-slate-500 font-semibold mb-0.5">Action Folder Parent</label>
-                      <input 
-                        type="text"
-                        value={filterForm.action_parent}
-                        onChange={(e) => setFilterForm({ ...filterForm, action_parent: e.target.value })}
-                        placeholder="e.g. Speedtest"
-                        className="w-full px-2 py-1 bg-white border border-slate-200 rounded focus:outline-none focus:border-blue-500 font-bold text-blue-700"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-slate-500 font-semibold mb-0.5">Action Folder Child</label>
-                      <input 
-                        type="text"
-                        value={filterForm.action_child}
-                        onChange={(e) => setFilterForm({ ...filterForm, action_child: e.target.value })}
-                        placeholder="e.g. Purwokerto"
-                        className="w-full px-2 py-1 bg-white border border-slate-200 rounded focus:outline-none focus:border-blue-500 font-bold text-blue-700"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between pt-1">
-                    <button
-                      type="submit"
-                      className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded cursor-pointer transition-colors text-[10px]"
-                    >
-                      Add Rule
-                    </button>
-                    {filterMsg && (
-                      <span className="text-[9px] text-slate-600 italic">{filterMsg}</span>
-                    )}
-                  </div>
-                </form>
-              </div>
-            </div>
-          )}
-          <div className="p-4 flex-1 overflow-y-auto">
-            <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-3 px-2">Dynamic Folders</p>
-            
-            <nav className="space-y-2 text-sm" id="folders_tree">
-              
-              {/* All Folder */}
-              <button 
-                onClick={() => setSelectedFolder('all')}
-                className={`w-full flex items-center justify-between px-3 py-2 rounded-md transition-all cursor-pointer ${
-                  selectedFolder === 'all' 
-                    ? 'bg-indigo-50 text-indigo-700 font-semibold' 
-                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
-                }`}
-              >
-                <div className="flex items-center space-x-2.5">
-                  <Inbox className={`h-4 w-4 ${selectedFolder === 'all' ? 'text-indigo-600' : 'text-slate-400'}`} />
-                  <span>All Tickets</span>
-                </div>
-                <span className={`text-xs px-1.5 py-0.5 rounded ${
-                  selectedFolder === 'all' ? 'bg-indigo-100 text-indigo-700 font-semibold' : 'bg-slate-100 text-slate-500 font-medium'
-                }`}>
-                  {emails.length}
-                </span>
-              </button>
-                       {/* Dynamic Categories & Sub-Categories */}
-              {(() => {
-                const grouped: Record<string, { folder_child: string; count: number }[]> = {};
-                dynamicFolders.forEach(item => {
-                  const parent = item.folder_parent || 'Unknown Sender';
-                  if (!grouped[parent]) {
-                    grouped[parent] = [];
-                  }
-                  grouped[parent].push({ folder_child: item.folder_child || 'Lainnya', count: item.count });
-                });
-                
-                return Object.keys(grouped).map(parent => {
-                  const childFolders = grouped[parent];
-                  const parentTotal = childFolders.reduce((sum, c) => sum + c.count, 0);
-                  const isExpanded = expandedParents[parent] !== false; // expanded by default
-                  
-                  return (
-                    <div key={parent} className="space-y-0.5 border-b border-slate-100 pb-1.5 last:border-none">
-                      <div 
-                        onClick={() => setSelectedFolder(`parent:${parent}`)}
-                        className={`w-full flex items-center justify-between px-3 py-2 rounded-md transition-all cursor-pointer group ${
-                          selectedFolder === `parent:${parent}` 
-                            ? 'bg-indigo-50 text-indigo-700 font-semibold' 
-                            : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
-                        }`}
-                      >
-                        <div className="flex items-center space-x-1 min-w-0">
-                          <span 
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setExpandedParents(prev => ({ ...prev, [parent]: !isExpanded }));
-                            }}
-                            className="p-1 hover:bg-slate-200/50 rounded cursor-pointer transition-colors shrink-0"
-                            title={isExpanded ? "Collapse" : "Expand"}
-                          >
-                            {isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-                          </span>
-                          <Folder className={`h-4 w-4 shrink-0 ${
-                            selectedFolder === `parent:${parent}` ? 'text-indigo-600' : 'text-slate-400'
-                          }`} />
-                          <span className="truncate" title={parent}>{parent}</span>
-                        </div>
-                        <span className={`text-xs px-1.5 py-0.5 rounded shrink-0 ${
-                          selectedFolder === `parent:${parent}` ? 'bg-indigo-100 text-indigo-700 font-semibold' : 'bg-slate-100 text-slate-500 font-medium'
-                        }`}>
-                          {parentTotal}
-                        </span>
-                      </div>
-
-                      {/* Subfolders (Dynamic Children) */}
-                      {isExpanded && (
-                        <div className="pl-6 space-y-1 border-l border-slate-100 ml-5 mt-0.5">
-                          {childFolders.map(childObj => {
-                            const childFolderKey = `child:${parent}||${childObj.folder_child}`;
-                            const isChildSelected = selectedFolder === childFolderKey;
-                            
-                            return (
-                              <button
-                                key={childObj.folder_child}
-                                onClick={() => setSelectedFolder(childFolderKey)}
-                                className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded text-xs transition-all cursor-pointer ${
-                                  isChildSelected
-                                    ? 'bg-slate-100 text-indigo-700 font-bold'
-                                    : 'text-slate-500 hover:bg-slate-50/80 hover:text-slate-800'
-                                }`}
-                              >
-                                <span className="flex items-center space-x-2 truncate">
-                                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                                    parent === 'Speedtest' ? 'bg-blue-400' :
-                                    parent === 'Approval' ? 'bg-indigo-400' :
-                                    parent === 'Meeting' ? 'bg-amber-400' : 'bg-slate-300'
-                                  }`}></span>
-                                  <span className="truncate" title={childObj.folder_child}>{childObj.folder_child}</span>
-                                </span>
-                                <span className="text-[10px] text-slate-400 font-mono font-medium ml-1 shrink-0">
-                                  {childObj.count}
-                                </span>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  );
-                });
-              })()}
-
-              {/* Unassigned / fallback when emails have no category or uncategorized */}
-              {dynamicFolders.length === 0 && (
-                <div className="p-3 text-center text-xs text-slate-400 italic">
-                  No folders generated yet. Please import emails to trigger folder auto-generation!
-                </div>
-              )}
-
-            </nav>
-          </div>
-
-          {/* Quick Informational Guide at Sidebar bottom */}
-          <div className="p-4 m-3 bg-slate-50 border border-slate-200/60 rounded-lg text-slate-500">
-            <h4 className="flex items-center space-x-1 text-xs font-semibold text-slate-800 mb-1">
-              <Info className="h-3.5 w-3.5 text-blue-600" />
-              <span>How Auto-Tagging works:</span>
-            </h4>
-            <ul className="text-[11px] list-disc list-inside space-y-1 mt-1 opacity-95 leading-tight">
-              <li><strong>SPEEDTEST RUTIN</strong> subject filters look for branch name after "CABANG".</li>
-              <li><strong>Approval</strong> triggers search inside subject/body for document types: UAT, FSD, or SIT.</li>
-            </ul>
-          </div>
-
-          {/* Footer DB status */}
-          <div className="p-4 border-t border-slate-100 text-[10px] text-slate-400 bg-slate-50/50 flex items-center justify-between mt-auto">
-            <span>SQLite DB: Connected h-4</span>
-            <span className="flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-              <span className="text-emerald-600 font-semibold">Active</span>
+        {/* TOP SYSTEM & ACTIONS BAR */}
+        <header className="h-16 border-b border-slate-200 bg-white flex items-center justify-between px-6 shrink-0" id="workspace_header">
+          <div className="flex items-center space-x-3">
+            <h1 className="text-base font-bold text-slate-800 tracking-tight">
+              {currentMenu === 'inbox' ? 'Workflow Email Ticketing System' : 'Automation Rule & Mail Config'}
+            </h1>
+            <span className="px-2 py-0.5 text-[10px] bg-slate-100 text-slate-600 rounded-full font-mono font-medium flex items-center gap-1.5 border border-slate-200">
+              <span className={`h-2 w-2 rounded-full ${appSettings.supabaseUrl ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`}></span>
+              {appSettings.supabaseUrl ? 'Supabase Active' : 'SQLite Standalone'}
             </span>
           </div>
-        </aside>
 
-        {/* PANE 2: MIDDLE COLUMN - EMAIL LIST & FILTER BAR */}
-        <section className="w-96 border-r border-slate-200 bg-[#F8FAFC] flex flex-col overflow-hidden shrink-0" id="pane_middle">
-          
-          {/* Header of Middle Pane */}
-          <div className="p-4 border-b border-slate-200 shrink-0 bg-[#F8FAFC]">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center space-x-2">
-                <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                  {selectedFolder === 'all' && 'All Tickets'}
-                  {selectedFolder.startsWith('parent:') && `Sender: ${selectedFolder.substring('parent:'.length)}`}
-                  {selectedFolder.startsWith('child:') && `${selectedFolder.substring('child:'.length).split('||')[1]}`}
-                </h2>
-                <span className="bg-slate-200 text-slate-700 text-xs px-2 py-0.5 rounded font-mono font-bold">
-                  {filteredEmails.length}
-                </span>
+          <div className="flex items-center space-x-2.5">
+            {currentMenu === 'inbox' && (
+              <>
+                <div className="relative w-64 text-xs">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+                  <input
+                    type="text"
+                    placeholder="Search sender, subject..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full pl-8.5 pr-3 py-1.5 bg-slate-100 hover:bg-slate-150 border border-transparent hover:border-slate-200 focus:border-blue-500 focus:bg-white rounded-lg focus:outline-none transition-all leading-normal"
+                  />
+                </div>
+
+                <button
+                  onClick={handleManualSync}
+                  disabled={isSyncing}
+                  className="flex items-center space-x-1.5 px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-xs transition-colors shadow-sm cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+                  <span>{isSyncing ? 'Syncing POP3...' : 'Sync Mail'}</span>
+                </button>
+
+                <button
+                  onClick={handleClearDatabase}
+                  className="flex items-center space-x-1.5 px-3 py-1.5 bg-white border border-slate-200 hover:border-rose-200 text-slate-500 hover:text-rose-600 font-bold rounded-lg text-xs transition-colors cursor-pointer"
+                  title="Flush cached inbox data"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  <span>Flush Inbox</span>
+                </button>
+              </>
+            )}
+          </div>
+        </header>
+
+        {syncStatus && (
+          <div className="px-6 py-2 bg-blue-50 text-blue-800 border-b border-blue-100 text-xs font-medium flex items-center justify-between animate-fade-in animate-pulse">
+            <span className="flex items-center gap-1.5">
+              <Activity className="h-3.5 w-3.5" />
+              {syncStatus}
+            </span>
+          </div>
+        )}
+
+        {/* 3. INBOX: THREE-PANE LAYOUT */}
+        {currentMenu === 'inbox' && (
+          <div className="flex flex-row flex-1 overflow-hidden w-full" id="inbox_three_pane">
+            
+            {/* PANE 1: VIRTUAL FOLDERS TREE (LEFT) */}
+            <aside className="w-64 border-r border-slate-200 bg-white flex flex-col shrink-0 overflow-y-auto" id="pane_folders">
+              <div className="p-4 space-y-2.5">
+                <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 px-2.5">Virtual Folders</p>
+                
+                <nav className="space-y-1 text-xs">
+                  {/* All Folders selection */}
+                  <button
+                    onClick={() => setSelectedFolder('all')}
+                    className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg transition-all cursor-pointer ${
+                      selectedFolder === 'all' 
+                        ? 'bg-blue-50 text-blue-700 font-semibold' 
+                        : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                    }`}
+                  >
+                    <div className="flex items-center space-x-2.5">
+                      <Inbox className={`h-4 w-4 ${selectedFolder === 'all' ? 'text-blue-600' : 'text-slate-400'}`} />
+                      <span>All Tickets</span>
+                    </div>
+                    <span className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-bold font-mono">
+                      {emails.length}
+                    </span>
+                  </button>
+
+                  <div className="border-b border-slate-100 my-2"></div>
+
+                  {/* Grouped Dynamic folder tree */}
+                  {(() => {
+                    const grouped: Record<string, { child: string; count: number }[]> = {};
+                    dynamicFolders.forEach(item => {
+                      const parent = item.folder_parent || 'Lainnya';
+                      if (!grouped[parent]) grouped[parent] = [];
+                      grouped[parent].push({ child: item.folder_child || 'Uncategorized', count: item.count });
+                    });
+
+                    return Object.keys(grouped).map(parent => {
+                      const children = grouped[parent];
+                      const totalCount = children.reduce((sum, c) => sum + c.count, 0);
+                      const isExpanded = expandedParents[parent] !== false;
+
+                      return (
+                        <div key={parent} className="space-y-0.5">
+                          {/* Parent Category Row */}
+                          <div
+                            onClick={() => setSelectedFolder(`parent:${parent}`)}
+                            className={`w-full flex items-center justify-between px-3 py-2 rounded-lg transition-all cursor-pointer group ${
+                              selectedFolder === `parent:${parent}`
+                                ? 'bg-slate-100 text-slate-900 font-bold'
+                                : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                            }`}
+                          >
+                            <div className="flex items-center space-x-2">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setExpandedParents(prev => ({ ...prev, [parent]: !isExpanded }));
+                                }}
+                                className="p-0.5 hover:bg-slate-200 rounded text-slate-400 cursor-pointer"
+                              >
+                                {isExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                              </button>
+                              <Folder className="h-3.5 w-3.5 text-slate-400 group-hover:text-slate-600" />
+                              <span className="truncate">{parent}</span>
+                            </div>
+                            <span className="text-[9px] bg-slate-100 font-bold px-1.5 py-0.2 rounded text-slate-500">
+                              {totalCount}
+                            </span>
+                          </div>
+
+                          {/* Children List */}
+                          {isExpanded && (
+                            <div className="pl-6 space-y-0.5 border-l border-slate-100 ml-5.5 py-0.5">
+                              {children.map(ch => {
+                                const isSelected = selectedFolder === `child:${parent}|||${ch.child}`;
+                                return (
+                                  <button
+                                    key={ch.child}
+                                    onClick={() => setSelectedFolder(`child:${parent}|||${ch.child}`)}
+                                    className={`w-full flex items-center justify-between py-1.5 px-2.5 rounded transition-all text-left truncate cursor-pointer ${
+                                      isSelected
+                                        ? 'bg-blue-50 text-blue-700 font-semibold'
+                                        : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800'
+                                    }`}
+                                  >
+                                    <span className="truncate text-[11px]">{ch.child}</span>
+                                    <span className={`text-[8px] px-1 py-0.1 font-bold rounded ${
+                                      isSelected ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-400'
+                                    }`}>
+                                      {ch.count}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    });
+                  })()}
+                </nav>
               </div>
-              
-              {/* Sliders filter button to toggle advanced search */}
-              <button 
-                onClick={() => setShowFilters(!showFilters)}
-                className={`flex items-center space-x-1 px-2.5 py-1 rounded text-xs transition-colors cursor-pointer border ${
-                  showFilters || Object.values(filters).some(val => val !== '' && val !== 'all')
-                    ? 'bg-blue-50 border-blue-200 text-blue-700 font-bold'
-                    : 'bg-white hover:bg-slate-50 border-slate-200 text-slate-505'
-                }`}
-              >
-                <SlidersHorizontal className="h-3 w-3" />
-                <span>Filters</span>
-              </button>
-            </div>
+            </aside>
 
-            {/* Advanced Search / Top Filter Bar */}
-            {(showFilters || Object.values(filters).some(val => val !== '' && val !== 'all')) && (
-              <div className="p-3 bg-white rounded-lg border border-slate-200 space-y-2.5 text-xs text-slate-700 mb-1" id="filter_bar">
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-slate-500 mb-0.5 font-semibold text-[10px]">From</label>
-                    <input 
-                      type="text"
-                      placeholder="Sender name..."
-                      value={filters.from}
-                      onChange={(e) => setFilters({...filters, from: e.target.value})}
-                      className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded focus:outline-none focus:border-blue-500 focus:bg-white text-xs transition-colors"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-slate-500 mb-0.5 font-semibold text-[10px]">To (Recipient)</label>
-                    <input 
-                      type="text"
-                      placeholder="Recipient address..."
-                      value={filters.to}
-                      onChange={(e) => setFilters({...filters, to: e.target.value})}
-                      className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded focus:outline-none focus:border-blue-500 focus:bg-white text-xs transition-colors"
-                    />
-                  </div>
+            {/* PANE 2: TICKETS EMAIL LIST (MIDDLE) */}
+            <section className="w-[380px] border-r border-slate-200 bg-white flex flex-col shrink-0 overflow-y-auto" id="pane_email_list">
+              <div className="p-4 border-b border-slate-100 bg-slate-50 shrink-0 flex items-center justify-between">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                  Tickets List ({filteredEmails.length})
+                </span>
+                <span className="text-[9px] text-slate-400 italic font-medium">Sorted by date</span>
+              </div>
+
+              {filteredEmails.length === 0 ? (
+                <div className="flex flex-col items-center justify-center p-8 text-center flex-1 text-slate-400">
+                  <Mail className="h-8 w-8 text-slate-200 mb-2" />
+                  <p className="text-xs font-semibold">No tickets found</p>
+                  <p className="text-[10px] text-slate-400 mt-1 leading-normal max-w-[200px]">
+                    No emails match the selected folder or search query.
+                  </p>
                 </div>
+              ) : (
+                <div className="divide-y divide-slate-100 overflow-y-auto flex-1 select-none">
+                  {filteredEmails.map(email => {
+                    const isSelected = selectedEmail?.message_id === email.message_id;
+                    const isBankOrder = email.folder_parent === 'Bank Order';
 
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-slate-500 mb-0.5 font-semibold text-[10px]">Subject snippet</label>
-                    <input 
-                      type="text"
-                      placeholder="Subject contains..."
-                      value={filters.subject}
-                      onChange={(e) => setFilters({...filters, subject: e.target.value})}
-                      className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded focus:outline-none focus:border-blue-500 focus:bg-white text-xs transition-colors"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-slate-500 mb-0.5 font-semibold text-[10px]">Has the words</label>
-                    <input 
-                      type="text"
-                      placeholder="Body search..."
-                      value={filters.hasWords}
-                      onChange={(e) => setFilters({...filters, hasWords: e.target.value})}
-                      className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded focus:outline-none focus:border-blue-500 focus:bg-white text-xs transition-colors"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex flex-col gap-2 pt-1">
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-500 font-semibold text-[10px]">Date within:</span>
-                    <button
-                      onClick={() => setFilters({ from: '', to: '', subject: '', hasWords: '', dateWithin: 'all' })}
-                      className="text-[11px] text-blue-600 hover:text-blue-800 font-bold cursor-pointer"
-                    >
-                      Reset Filters
-                    </button>
-                  </div>
-                  <div className="grid grid-cols-4 gap-1">
-                    {['all', 'today', '7days', '30days'].map((option) => (
-                      <button
-                        key={option}
-                        onClick={() => setFilters({...filters, dateWithin: option})}
-                        className={`py-1 rounded text-[10px] font-bold border capitalize cursor-pointer text-center transition-colors ${
-                          filters.dateWithin === option
-                            ? 'bg-blue-600 border-blue-600 text-white font-semibold'
-                            : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+                    return (
+                      <div
+                        key={email.message_id}
+                        onClick={() => setSelectedEmail(email)}
+                        className={`p-4 transition-all cursor-pointer border-l-4 text-left relative ${
+                          isSelected 
+                            ? 'bg-blue-50/70 border-blue-600' 
+                            : 'hover:bg-slate-50 border-transparent'
                         }`}
                       >
-                        {option === 'all' ? 'All' : option === '7days' ? '7d' : option === '30days' ? '30d' : option}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="font-bold text-slate-800 text-xs truncate max-w-[160px]">
+                            {email.fromName}
+                          </span>
+                          <span className="text-[9px] text-slate-400 shrink-0 font-mono">
+                            {formatTimestamp(email.date)}
+                          </span>
+                        </div>
 
-          {/* Scrollable Email Cards List */}
-          <div className="flex-1 overflow-y-auto divide-y divide-slate-100 bg-[#F8FAFC]" id="emails_cards_list">
-            {filteredEmails.map(email => {
-              const isSelected = selectedEmail?.uid === email.uid;
-              return (
-                <div
-                  key={email.uid}
-                  onClick={() => setSelectedEmail(email)}
-                  className={`p-4 bg-white border-b border-slate-100 cursor-pointer hover:bg-slate-50 transition-colors relative block text-left ${
-                    isSelected ? 'bg-slate-50' : ''
-                  }`}
-                >
-                  {/* Selected card blue indicator */}
-                  {isSelected && (
-                    <div className="absolute left-0 top-0 bottom-0 w-1 bg-blue-600" />
-                  )}
-                  
-                  <div className="flex justify-between items-start mb-1">
-                    <span className="text-xs font-bold text-slate-800 truncate max-w-[70%]">
-                      {email.fromName || email.fromAddress || 'Unknown Sender'}
-                    </span>
-                    <span className="text-[10px] text-slate-400 font-mono flex items-center shrink-0">
-                      {formatTimestamp(email.date)}
-                    </span>
-                  </div>
+                        <p className={`text-xs font-semibold leading-snug truncate mb-1 ${
+                          isSelected ? 'text-blue-800' : 'text-slate-700'
+                        }`}>
+                          {email.subject}
+                        </p>
 
-                  <h3 className="text-xs font-semibold text-slate-700 truncate mb-1">
-                    {email.subject}
-                  </h3>
+                        <p className="text-[10px] text-slate-400 line-clamp-2 leading-relaxed mb-2 pr-2">
+                          {email.body_text}
+                        </p>
 
-                  <p className="text-xs text-slate-500 line-clamp-2 leading-relaxed mb-2">
-                    {email.body || '(No message preview available)'}
-                  </p>
+                        {/* Folder tags */}
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="bg-slate-100 text-slate-600 border border-slate-200 text-[9px] font-bold px-1.5 py-0.2 rounded font-mono">
+                            {email.folder_parent || 'Lainnya'} &gt; {email.folder_child || 'Uncategorized'}
+                          </span>
 
-                  {/* Badges Row */}
-                  {email.tags.length > 0 && (
-                    <div className="mt-3 flex flex-wrap gap-1.5">
-                      {email.tags.map(tag => (
-                        <span
-                          key={tag}
-                          className={`text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-tighter ${getTagBadgeStyles(tag)}`}
-                        >
-                          {tag}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-
-            {filteredEmails.length === 0 && (
-              <div className="p-8 text-center" id="no_emails_state">
-                <Inbox className="h-10 w-10 text-slate-300 mx-auto mb-2" />
-                <p className="text-slate-500 font-semibold text-xs">No emails found</p>
-                <p className="text-slate-400 text-[10px] mt-1">Modify filters or fetch from POP3 server.</p>
-              </div>
-            )}
-          </div>
-        </section>
-
-        {/* PANE 3: RIGHT COLUMN - DRILL-DOWN / DETAIL VIEW */}
-        <section className="flex-1 bg-white flex flex-col overflow-hidden" id="pane_right_detail">
-          {selectedEmail ? (
-            <div className="flex flex-col h-full overflow-hidden" id="active_email_details">
-              
-              {/* Email Detail Header */}
-              <header className="p-6 border-b border-slate-100 bg-white">
-                <div className="flex justify-between items-start mb-4">
-                  <h2 className="text-xl font-bold text-slate-800 flex-1 leading-tight">
-                    {selectedEmail.subject}
-                  </h2>
-                </div>
-                
-                <div className="flex items-center gap-4">
-                  <div className="w-10 h-10 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center font-bold text-sm shrink-0">
-                    {getInitials(selectedEmail.fromName || selectedEmail.fromAddress)}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-baseline gap-2 flex-wrap">
-                      <span className="font-semibold text-slate-700 text-sm">
-                        {selectedEmail.fromName || 'Unknown Sender'}
-                      </span>
-                      <span className="text-xs text-slate-400 font-mono">
-                        &lt;{selectedEmail.fromAddress || 'none'}&gt;
-                      </span>
-                    </div>
-                    <div className="text-xs text-slate-400 mt-0.5">
-                      To: fachrul.wisnu@advantagescm.com • {new Date(selectedEmail.date).toLocaleString('en-US', {
-                        month: 'short', 
-                        day: 'numeric', 
-                        year: 'numeric', 
-                        hour: '2-digit', 
-                        minute: '2-digit'
-                      })}
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap gap-1">
-                    {selectedEmail.tags.map(tag => (
-                      <span
-                        key={tag}
-                        className={`px-2 py-0.5 text-[10px] font-bold rounded uppercase tracking-tighter ${getTagBadgeStyles(tag)}`}
-                      >
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              </header>
-
-              {/* View mode buttons if HTML is available */}
-              {selectedEmail.bodyHtml && (
-                <div className="px-6 py-2 border-b border-slate-100 flex justify-end space-x-1 shrink-0 bg-white">
-                  <span className="text-xs text-slate-400 self-center mr-2 font-semibold">Render as:</span>
-                  <button
-                    onClick={() => setBodyViewMode('text')}
-                    className={`px-3 py-1 text-xs font-semibold rounded cursor-pointer transition-colors ${
-                      bodyViewMode === 'text'
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-slate-100 hover:bg-slate-200 text-slate-600'
-                    }`}
-                  >
-                    Plain Text
-                  </button>
-                  <button
-                    onClick={() => setBodyViewMode('html')}
-                    className={`px-3 py-1 text-xs font-semibold rounded cursor-pointer transition-colors ${
-                      bodyViewMode === 'html'
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-slate-100 hover:bg-slate-200 text-slate-600'
-                    }`}
-                  >
-                    HTML View
-                  </button>
+                          {email.api_workflow_status && email.api_workflow_status !== 'none' && (
+                            <span className={`text-[8px] font-bold uppercase px-1.5 py-0.2 rounded-full border flex items-center gap-1 ${
+                              email.api_workflow_status === 'triggered' 
+                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200' 
+                                : email.api_workflow_status === 'failed'
+                                ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                : 'bg-amber-50 text-amber-700 border-amber-200 animate-pulse'
+                            }`}>
+                              <Zap className="h-2 w-2 fill-current" />
+                              CIT {email.api_workflow_status}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
+            </section>
 
-              {/* Email Content Body Frame */}
-              <div className="flex-1 p-6 overflow-y-auto bg-white" id="email_rendered_body">
-                {bodyViewMode === 'html' && selectedEmail.bodyHtml ? (
-                  <div className="w-full h-full border border-slate-100 rounded-lg p-4 bg-white overflow-y-auto">
-                    {/* Render HTML securely in iframe with local source */}
-                    <iframe 
-                      srcDoc={`
-                        <!DOCTYPE html>
-                        <html>
-                          <head>
-                            <style>
-                              body { 
-                                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
-                                font-size: 14px; 
-                                line-height: 1.6; 
-                                color: #334155; 
-                                margin: 0; 
-                                padding: 4px;
-                              }
-                              p { margin-top: 0; margin-bottom: 1em; }
-                              strong { color: #0f172a; }
-                              ul { padding-left: 20px; margin-top: 0; }
-                              li { margin-bottom: 0.5em; }
-                              h3 { margin-top: 0; color: #1e293b; }
-                            </style>
-                          </head>
-                          <body>
-                            ${selectedEmail.bodyHtml}
-                          </body>
-                        </html>
-                      `}
-                      className="w-full h-full border-0"
-                      title="Email HTML body"
-                      sandbox="allow-same-origin"
-                    />
+            {/* PANE 3: DETAILED EMAIL & AUTOMATION STATUS VIEW (RIGHT) */}
+            <section className="flex-1 bg-white flex flex-col overflow-y-auto" id="pane_email_detail">
+              {selectedEmail ? (
+                <div className="flex flex-col h-full overflow-y-auto">
+                  
+                  {/* Email Detail Header */}
+                  <div className="p-6 border-b border-slate-100 bg-slate-50/50 shrink-0">
+                    <div className="flex items-start justify-between">
+                      <div className="flex items-center space-x-3.5 select-text">
+                        <div className="h-10 w-10 bg-gradient-to-tr from-slate-200 to-slate-100 rounded-full flex items-center justify-center font-bold text-slate-600 text-sm shadow-inner border border-slate-200 shrink-0">
+                          {getInitials(selectedEmail.fromName || '')}
+                        </div>
+                        <div>
+                          <p className="font-bold text-slate-800 text-sm leading-none flex items-center gap-1.5">
+                            <span>{selectedEmail.fromName}</span>
+                            <span className="text-[10px] font-normal text-slate-400 font-mono">({selectedEmail.fromAddress})</span>
+                          </p>
+                          <p className="text-[11px] text-slate-400 mt-1 flex items-center gap-1">
+                            <Clock className="h-3 w-3 shrink-0" />
+                            <span>Received: {new Date(selectedEmail.date).toLocaleString()}</span>
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="text-right">
+                        <span className="bg-blue-50 text-blue-700 border border-blue-200 text-[10px] font-bold px-2.5 py-0.5 rounded-full inline-block">
+                          Folder: {selectedEmail.folder_parent || 'Lainnya'} / {selectedEmail.folder_child || 'Uncategorized'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 border-t border-slate-200/50 pt-4">
+                      <h2 className="text-sm font-bold text-slate-800 leading-snug select-text">
+                        {selectedEmail.subject}
+                      </h2>
+                    </div>
                   </div>
-                ) : (
-                  <div className="w-full h-full border border-slate-100 rounded-lg p-5 bg-slate-50/60 font-mono text-[11px] text-slate-700 whitespace-pre-wrap overflow-y-auto leading-relaxed">
-                    {selectedEmail.body || '(Empty Email Body)'}
+
+                  {/* Body Viewer */}
+                  <div className="p-6 flex-1 select-text border-b border-slate-100">
+                    <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-5 font-mono text-xs text-slate-700 whitespace-pre-wrap leading-relaxed min-h-[160px]">
+                      {selectedEmail.body_text}
+                    </div>
+                  </div>
+
+                  {/* CIT Automation Status Panel (Highly Visible) */}
+                  <div className="p-6 bg-slate-50/80 shrink-0 border-t border-slate-100" id="cit_automation_panel">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-center space-x-2">
+                        <Zap className="h-4.5 w-4.5 text-blue-600" />
+                        <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Active ATM CIT API Automation</h3>
+                      </div>
+                      
+                      {selectedEmail.api_workflow_status && selectedEmail.api_workflow_status !== 'none' ? (
+                        <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border uppercase ${
+                          selectedEmail.api_workflow_status === 'triggered'
+                            ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                            : selectedEmail.api_workflow_status === 'failed'
+                            ? 'bg-rose-50 text-rose-800 border-rose-200'
+                            : 'bg-amber-50 text-amber-800 border-amber-200 animate-pulse'
+                        }`}>
+                          Workflow: {selectedEmail.api_workflow_status}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-slate-400 italic">No Automation Triggered for this Folder</span>
+                      )}
+                    </div>
+
+                    {/* Parser Extracted Preview if Bank Order */}
+                    {(selectedEmail.folder_parent === 'Bank Order' || (selectedEmail.api_workflow_status && selectedEmail.api_workflow_status !== 'none')) && (
+                      <div className="bg-white border border-slate-200 rounded-xl p-4.5 mb-3 shadow-sm text-xs">
+                        <p className="font-bold text-slate-700 mb-2">Variables Extracted by Parser Engine:</p>
+                        <div className="grid grid-cols-3 gap-3">
+                          <div className="p-2.5 bg-slate-50 rounded-lg">
+                            <span className="text-[10px] text-slate-400 block mb-0.5">Order Amount</span>
+                            <span className="font-bold font-mono text-slate-800 text-sm">
+                              {(() => {
+                                const match = (selectedEmail.body_text || '').match(/(?:Amount|Nilai)\s*[:=]\s*([\d,.]+)/i);
+                                return match ? match[1] : '0';
+                              })()}
+                            </span>
+                          </div>
+                          <div className="p-2.5 bg-slate-50 rounded-lg">
+                            <span className="text-[10px] text-slate-400 block mb-0.5">Currency Code</span>
+                            <span className="font-bold font-mono text-slate-800 text-sm">
+                              {(() => {
+                                const match = (selectedEmail.body_text || '').match(/(?:Currency|Mata\s+Uang|Currency\s+Code)\s*[:=]\s*([a-zA-Z]{3})/i);
+                                return match ? match[1].toUpperCase() : 'IDR';
+                              })()}
+                            </span>
+                          </div>
+                          <div className="p-2.5 bg-slate-50 rounded-lg">
+                            <span className="text-[10px] text-slate-400 block mb-0.5">Target Branch</span>
+                            <span className="font-bold font-mono text-blue-700 text-sm">
+                              {(() => {
+                                const match = (selectedEmail.body_text || '').match(/(?:Branch|Cabang|Bank\s+Branch\s+Name|Branch\s+Name)\s*[:=]\s*([a-zA-Z0-9\s\-]+)/i);
+                                return match ? match[1].trim() : 'Purwokerto';
+                              })()}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* API Logs Output Terminal */}
+                    {selectedEmail.api_workflow_log && (
+                      <div className="bg-slate-900 rounded-xl p-4 border border-slate-800 font-mono text-[10px] text-slate-300 leading-snug">
+                        <div className="flex items-center justify-between text-[9px] text-slate-500 mb-2 border-b border-slate-800 pb-1.5">
+                          <span>SYSTEM EXECUTION LOGS</span>
+                          <span>Sequential API Chaining</span>
+                        </div>
+                        <div className="max-h-40 overflow-y-auto whitespace-pre-wrap select-text pr-2">
+                          {selectedEmail.api_workflow_log}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center h-full p-8 text-center text-slate-400 flex-1">
+                  <Mail className="h-12 w-12 text-slate-200 mb-3" />
+                  <p className="font-bold text-sm">No ticket selected</p>
+                  <p className="text-xs text-slate-400 mt-1 max-w-[280px] leading-normal">
+                    Select a ticket from the list to view its contents, extracted variables, and CIT API execution state.
+                  </p>
+                </div>
+              )}
+            </section>
+
+          </div>
+        )}
+
+        {/* 4. SETTINGS SECTION */}
+        {currentMenu === 'settings' && (
+          <div className="flex flex-row flex-1 overflow-hidden w-full bg-slate-50" id="settings_workspace">
+            
+            {/* SETTINGS MENU TABS SELECTOR (LEFT) */}
+            <aside className="w-56 border-r border-slate-200 bg-white flex flex-col shrink-0" id="pane_settings_tabs">
+              <div className="p-4 space-y-1 text-xs">
+                <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 px-3 mb-2">Configure</p>
+
+                <button
+                  onClick={() => setSettingsTab('filters')}
+                  className={`w-full flex items-center space-x-2 px-3 py-2.5 rounded-lg transition-all text-left font-semibold cursor-pointer ${
+                    settingsTab === 'filters' 
+                      ? 'bg-blue-50 text-blue-700' 
+                      : 'text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <SlidersHorizontal className="h-4 w-4" />
+                  <span>Dynamic Filters</span>
+                </button>
+
+                <button
+                  onClick={() => setSettingsTab('api')}
+                  className={`w-full flex items-center space-x-2 px-3 py-2.5 rounded-lg transition-all text-left font-semibold cursor-pointer ${
+                    settingsTab === 'api' 
+                      ? 'bg-blue-50 text-blue-700' 
+                      : 'text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <Link className="h-4 w-4" />
+                  <span>API Integrations</span>
+                </button>
+
+                <button
+                  onClick={() => setSettingsTab('mail')}
+                  className={`w-full flex items-center space-x-2 px-3 py-2.5 rounded-lg transition-all text-left font-semibold cursor-pointer ${
+                    settingsTab === 'mail' 
+                      ? 'bg-blue-50 text-blue-700' 
+                      : 'text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <Server className="h-4 w-4" />
+                  <span>Mail & DB Config</span>
+                </button>
+              </div>
+            </aside>
+
+            {/* SETTINGS PANEL CONTENTS (RIGHT) */}
+            <section className="flex-1 p-8 overflow-y-auto" id="settings_main_panel">
+              <div className="max-w-3xl bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+                
+                {/* TAB 1: DYNAMIC FILTERS CRUD BUILDER */}
+                {settingsTab === 'filters' && (
+                  <div className="space-y-6">
+                    <div>
+                      <h2 className="text-sm font-bold text-slate-800">Dynamic Filter Routing</h2>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        Configure logic rules to dynamically tag incoming tickets and trigger automated workflows based on matching criteria.
+                      </p>
+                    </div>
+
+                    {/* Rule builder form */}
+                    <form onSubmit={handleSaveFilter} className="bg-slate-50 rounded-xl p-5 border border-slate-200/60 text-xs space-y-3.5">
+                      <p className="font-bold text-slate-700 text-[10px] uppercase tracking-wider flex items-center gap-1">
+                        <Plus className="h-3.5 w-3.5" />
+                        Create New Filter Rule
+                      </p>
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-slate-500 font-bold mb-1">Filter Name</label>
+                          <input 
+                            type="text"
+                            value={filterForm.name}
+                            onChange={(e) => setFilterForm({ ...filterForm, name: e.target.value })}
+                            placeholder="e.g. Bank Order Auto Router"
+                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-slate-500 font-bold mb-1">Match Sender (From contains)</label>
+                          <input 
+                            type="text"
+                            value={filterForm.match_from}
+                            onChange={(e) => setFilterForm({ ...filterForm, match_from: e.target.value })}
+                            placeholder="e.g. treasury@bank.com"
+                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-slate-500 font-bold mb-1">Match Subject (contains)</label>
+                          <input 
+                            type="text"
+                            value={filterForm.match_subject}
+                            onChange={(e) => setFilterForm({ ...filterForm, match_subject: e.target.value })}
+                            placeholder="e.g. CIT Delivery Order"
+                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-slate-500 font-bold mb-1">Match Body Text (contains)</label>
+                          <input 
+                            type="text"
+                            value={filterForm.match_body}
+                            onChange={(e) => setFilterForm({ ...filterForm, match_body: e.target.value })}
+                            placeholder="e.g. signoff requested"
+                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-slate-500 font-bold mb-1">Action: Assign Folder Parent</label>
+                          <input 
+                            type="text"
+                            value={filterForm.action_parent}
+                            onChange={(e) => setFilterForm({ ...filterForm, action_parent: e.target.value })}
+                            placeholder="e.g. Bank Order"
+                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-bold text-blue-700"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-slate-500 font-bold mb-1">Action: Assign Folder Child</label>
+                          <input 
+                            type="text"
+                            value={filterForm.action_child}
+                            onChange={(e) => setFilterForm({ ...filterForm, action_child: e.target.value })}
+                            placeholder="e.g. Purwokerto"
+                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-bold text-blue-700"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Trigger API Checkbox */}
+                      <div className="flex items-center space-x-2.5 pt-1.5 select-none">
+                        <input
+                          type="checkbox"
+                          id="trigger_api_chk"
+                          checked={!!filterForm.trigger_api}
+                          onChange={(e) => setFilterForm({ ...filterForm, trigger_api: e.target.checked })}
+                          className="h-4.5 w-4.5 rounded text-blue-600 focus:ring-blue-500 border-slate-300"
+                        />
+                        <label htmlFor="trigger_api_chk" className="text-slate-700 font-bold flex items-center gap-1.5 cursor-pointer">
+                          <Zap className="h-4 w-4 text-blue-600 fill-blue-100" />
+                          <span>Trigger Sequential CIT API Chaining Workflow for matched tickets</span>
+                        </label>
+                      </div>
+
+                      <div className="flex items-center justify-between pt-2 border-t border-slate-200/60">
+                        <button
+                          type="submit"
+                          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg cursor-pointer text-xs"
+                        >
+                          Add Rule
+                        </button>
+                        {filterMsg && (
+                          <span className="text-slate-600 italic font-semibold">{filterMsg}</span>
+                        )}
+                      </div>
+                    </form>
+
+                    {/* Existing Rules CRUD Table */}
+                    <div className="space-y-3">
+                      <p className="font-bold text-slate-700 text-[10px] uppercase tracking-wider">Configured Filter Rules ({customFilters.length})</p>
+
+                      {customFilters.length === 0 ? (
+                        <p className="text-xs text-slate-400 italic">No custom filter rules defined yet.</p>
+                      ) : (
+                        <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                          <table className="w-full text-xs text-left text-slate-600 divide-y divide-slate-100">
+                            <thead className="bg-slate-50 font-bold text-slate-400 text-[10px] uppercase tracking-wider">
+                              <tr>
+                                <th className="p-3.5">Rule Name & Matching Criteria</th>
+                                <th className="p-3.5">Target Folder Routing</th>
+                                <th className="p-3.5 text-center">API Trigger</th>
+                                <th className="p-3.5 text-right">Action</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 bg-white">
+                              {customFilters.map(filter => (
+                                <tr key={filter.id} className="hover:bg-slate-50">
+                                  <td className="p-3.5 font-sans select-text">
+                                    <p className="font-bold text-slate-800 text-[13px]">{filter.name}</p>
+                                    <div className="text-[10px] text-slate-400 mt-1 space-y-0.5 font-mono leading-normal">
+                                      {filter.match_from && <p>From: "{filter.match_from}"</p>}
+                                      {filter.match_subject && <p>Subject: "{filter.match_subject}"</p>}
+                                      {filter.match_body && <p>Body: "{filter.match_body}"</p>}
+                                    </div>
+                                  </td>
+                                  <td className="p-3.5 font-medium">
+                                    <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded font-bold font-mono text-[10px] border border-blue-100">
+                                      {filter.action_parent} &gt; {filter.action_child}
+                                    </span>
+                                  </td>
+                                  <td className="p-3.5 text-center">
+                                    {filter.trigger_api ? (
+                                      <span className="text-emerald-600 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded text-[10px] font-bold uppercase inline-flex items-center gap-1">
+                                        <Zap className="h-3 w-3 fill-current" /> Active
+                                      </span>
+                                    ) : (
+                                      <span className="text-slate-400 font-bold uppercase text-[9px]">Disabled</span>
+                                    )}
+                                  </td>
+                                  <td className="p-3.5 text-right">
+                                    <button
+                                      type="button"
+                                      onClick={() => filter.id && handleDeleteFilter(filter.id)}
+                                      className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg cursor-pointer transition-colors"
+                                      title="Delete rule"
+                                    >
+                                      <Trash2 className="h-4 w-4" />
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
+
+                {/* TAB 2: ACTIVE ATM CIT API INTEGRATIONS */}
+                {settingsTab === 'api' && (
+                  <form onSubmit={handleSaveSettings} className="space-y-6">
+                    <div>
+                      <h2 className="text-sm font-bold text-slate-800">Active ATM CIT API Integration</h2>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        Configure the HTTP Header Auth Bearer token used to authorize automated delivery creations on the sequential CIT client workflow.
+                      </p>
+                    </div>
+
+                    <div className="space-y-4 text-xs">
+                      <div>
+                        <label className="block text-slate-500 font-bold mb-1.5">CIT API Authorization Token (Bearer Token)</label>
+                        <textarea
+                          rows={4}
+                          value={appSettings.citApiToken}
+                          onChange={(e) => setAppSettings({ ...appSettings, citApiToken: e.target.value })}
+                          placeholder="Paste your Bearer token or API key here..."
+                          className="w-full p-3 font-mono bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:border-blue-500 leading-relaxed text-xs"
+                        />
+                      </div>
+
+                      <div className="bg-blue-50 rounded-xl p-4.5 border border-blue-200/50 flex items-start space-x-3 text-slate-700 leading-normal">
+                        <Info className="h-5 w-5 text-blue-600 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="font-bold text-blue-900">Chained API Workflow Actions:</p>
+                          <ul className="list-decimal pl-4 mt-1.5 space-y-1 text-[11px] text-blue-800">
+                            <li>Check matched ticket folder (Folder Parent = <strong>Bank Order</strong>).</li>
+                            <li>Extract amount, currency code, and branch name dynamically using regex parsing on raw body.</li>
+                            <li>Authorize with Bearer Token and map parameters to Active ATM System IDs.</li>
+                            <li>POST to create delivery header followed by POST to insert itemized details automatically.</li>
+                          </ul>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-4 border-t border-slate-100">
+                      <button
+                        type="submit"
+                        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg cursor-pointer text-xs"
+                      >
+                        Save API Configuration
+                      </button>
+                      {saveStatus && (
+                        <span className="text-slate-600 italic font-semibold">{saveStatus}</span>
+                      )}
+                    </div>
+                  </form>
+                )}
+
+                {/* TAB 3: POP3 SECURE MAIL CONFIG & SUPABASE CREDS */}
+                {settingsTab === 'mail' && (
+                  <form onSubmit={handleSaveSettings} className="space-y-6">
+                    <div>
+                      <h2 className="text-sm font-bold text-slate-800">Mail Connection & Supabase Client Config</h2>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        Input POP3 credentials securely. The background cron auto-fetch routine runs every 3 minutes using these specifications.
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4 text-xs">
+                      <div>
+                        <label className="block text-slate-500 font-bold mb-1">POP3 Hostname</label>
+                        <input
+                          type="text"
+                          value={appSettings.pop3Host}
+                          onChange={(e) => setAppSettings({ ...appSettings, pop3Host: e.target.value })}
+                          placeholder="mail.advantagescm.com"
+                          className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-slate-500 font-bold mb-1">POP3 TLS Port</label>
+                        <input
+                          type="number"
+                          value={appSettings.pop3Port}
+                          onChange={(e) => setAppSettings({ ...appSettings, pop3Port: parseInt(e.target.value, 10) || 995 })}
+                          placeholder="995"
+                          className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4 text-xs">
+                      <div>
+                        <label className="block text-slate-500 font-bold mb-1">POP3 Username / Email</label>
+                        <input
+                          type="text"
+                          value={appSettings.pop3User}
+                          onChange={(e) => setAppSettings({ ...appSettings, pop3User: e.target.value })}
+                          placeholder="fachrul.wisnu@advantagescm.com"
+                          className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-slate-500 font-bold mb-1">POP3 Password</label>
+                        <div className="relative">
+                          <input
+                            type={showPassword ? 'text' : 'password'}
+                            value={appSettings.pop3Pass}
+                            onChange={(e) => setAppSettings({ ...appSettings, pop3Pass: e.target.value })}
+                            placeholder="POP3 Account Password"
+                            className="w-full pl-3 pr-10 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowPassword(!showPassword)}
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                          >
+                            {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* POP3 Diagnostic Button */}
+                    <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 text-xs flex items-center justify-between select-none">
+                      <div>
+                        <p className="font-bold text-slate-700">POP3 Server Connection Diagnostic</p>
+                        <p className="text-[10px] text-slate-400 mt-0.5">Attempt to connect and authorize with POP3 server immediately.</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleTestConnection}
+                        disabled={isTestingConn}
+                        className="px-3 py-1.5 bg-white border border-slate-200 hover:border-slate-300 text-slate-700 font-bold rounded-lg cursor-pointer transition-colors text-xs"
+                      >
+                        {isTestingConn ? 'Testing...' : 'Test Mail Server'}
+                      </button>
+                    </div>
+
+                    {testResult && (
+                      <div className={`p-3.5 rounded-xl text-xs border ${
+                        testResult.success 
+                          ? 'bg-emerald-50 text-emerald-800 border-emerald-200' 
+                          : 'bg-rose-50 text-rose-800 border-rose-200'
+                      }`}>
+                        <div className="flex items-start space-x-2">
+                          {testResult.success ? <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" /> : <AlertCircle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />}
+                          <div>
+                            <p className="font-bold leading-none">{testResult.success ? "POP3 Connection Succeeded" : "POP3 Connection Failed"}</p>
+                            <p className="opacity-90 leading-normal mt-1 text-[11px]">{testResult.message}</p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="border-t border-slate-200/50 pt-5 mt-4">
+                      <p className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                        <Database className="h-4 w-4 text-slate-400" />
+                        Optional Supabase PostgreSQL Credentials
+                      </p>
+                      <p className="text-[10px] text-slate-400 mb-4 leading-normal">
+                        Provide a Supabase REST endpoint URL and API key to replicate cached database actions. If left blank, the system automatically runs fully standalone on local SQLite database store.
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4 text-xs">
+                      <div>
+                        <label className="block text-slate-500 font-bold mb-1">Supabase API Endpoint (URL)</label>
+                        <input
+                          type="text"
+                          value={appSettings.supabaseUrl}
+                          onChange={(e) => setAppSettings({ ...appSettings, supabaseUrl: e.target.value })}
+                          placeholder="https://xxxx.supabase.co"
+                          className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono text-[11px]"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-slate-500 font-bold mb-1">Supabase Anon Key / Service Role Key</label>
+                        <input
+                          type="password"
+                          value={appSettings.supabaseKey}
+                          onChange={(e) => setAppSettings({ ...appSettings, supabaseKey: e.target.value })}
+                          placeholder="eyJhbGciOi..."
+                          className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono text-[11px]"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-4 border-t border-slate-100">
+                      <button
+                        type="submit"
+                        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg cursor-pointer text-xs"
+                      >
+                        Save Configuration
+                      </button>
+                      {saveStatus && (
+                        <span className="text-slate-600 italic font-semibold">{saveStatus}</span>
+                      )}
+                    </div>
+                  </form>
+                )}
+
               </div>
+            </section>
 
-              {/* Quick Reply Footer */}
-              <footer className="p-4 border-t border-slate-100 bg-slate-50">
-                <div className="flex items-center gap-3 bg-white border border-slate-200 rounded-full px-4 py-1.5">
-                  <input 
-                    type="text" 
-                    placeholder="Click to write a quick reply..." 
-                    className="text-xs text-slate-600 flex-1 bg-transparent border-none focus:outline-none focus:ring-0 placeholder-slate-400"
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        alert('Reply feature is ready to be linked with an SMTP gateway service.');
-                        (e.target as HTMLInputElement).value = '';
-                      }
-                    }}
-                  />
-                  <button 
-                    onClick={() => alert('Reply feature is ready to be linked with an SMTP gateway service.')}
-                    className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-full text-[10px] font-bold transition-colors cursor-pointer"
-                  >
-                    Send
-                  </button>
-                </div>
-              </footer>
+          </div>
+        )}
 
+      </main>
+
+      {/* Floating Toast Notification Area */}
+      <div className="fixed bottom-6 right-6 z-50 space-y-2 pointer-events-none w-80">
+        {toasts.map(t => (
+          <div key={t.id} className="p-4 bg-slate-900 border border-slate-800 text-white rounded-xl shadow-2xl flex items-start space-x-3 pointer-events-auto transition-all animate-fade-in relative overflow-hidden select-text">
+            <div className="absolute top-0 left-0 h-full w-1 bg-gradient-to-b from-blue-500 to-indigo-500"></div>
+            <Zap className="h-5 w-5 text-blue-400 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p className="font-bold text-xs">{t.title}</p>
+              <p className="text-[11px] text-slate-400 mt-1 leading-normal">{t.message}</p>
             </div>
-          ) : (
-            <div className="flex flex-col items-center justify-center h-full text-slate-400" id="empty_detail_view">
-              <Mail className="h-14 w-14 text-slate-200 mb-3" />
-              <p className="font-semibold text-sm text-slate-500">No email selected</p>
-              <p className="text-xs text-slate-400 mt-1">Select an email card from the list to view its complete content, metadata, and auto-assigned tags.</p>
-            </div>
-          )}
-        </section>
-
+            <button 
+              onClick={() => setToasts(prev => prev.filter(item => item.id !== t.id))}
+              className="text-slate-500 hover:text-white shrink-0 self-start p-0.5 cursor-pointer rounded"
+            >
+              &times;
+            </button>
+          </div>
+        ))}
       </div>
+
     </div>
   );
 }
