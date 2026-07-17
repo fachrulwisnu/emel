@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createClient } from '@supabase/supabase-js';
 import { 
   Mail, 
   Folder, 
@@ -79,7 +80,7 @@ export default function App() {
   const [settingsTab, setSettingsTab] = useState<'filters' | 'api' | 'mail'>('filters');
 
   // Loaders and State
-  const [emails, setEmails] = useState<Email[]>([]);
+  const [tickets, setTickets] = useState<Email[]>([]);
   const [selectedEmail, setSelectedEmail] = useState<Email | null>(null);
   const [selectedFolder, setSelectedFolder] = useState<string>('all');
   const [dynamicFolders, setDynamicFolders] = useState<{ folder_parent: string; folder_child: string; count: number }[]>([]);
@@ -140,7 +141,35 @@ export default function App() {
         const payload = JSON.parse(event.data);
         if (payload.event === 'email_synced') {
           addToast('Email Auto-Synced & Classified', payload.data.message || 'A new ticket has arrived.');
-          loadEmails();
+          
+          if (payload.data && payload.data.email) {
+            const rawEmail = payload.data.email;
+            let fromName = '';
+            let fromAddress = rawEmail.sender || '';
+            if (rawEmail.sender && rawEmail.sender.includes('<')) {
+              const match = rawEmail.sender.match(/^(.*?)\s*<(.*?)>/);
+              if (match) {
+                fromName = match[1].trim();
+                fromAddress = match[2].trim();
+              }
+            }
+
+            const newEmail: Email = {
+              ...rawEmail,
+              fromName: fromName || fromAddress,
+              fromAddress: fromAddress,
+              tags: Array.isArray(rawEmail.tags) ? rawEmail.tags : []
+            };
+
+            setTickets(prev => {
+              if (prev.some(t => t.message_id === newEmail.message_id)) {
+                return prev;
+              }
+              return [newEmail, ...prev];
+            });
+          } else {
+            loadEmails();
+          }
         }
       } catch (err) {
         console.error('Error parsing SSE event:', err);
@@ -154,7 +183,7 @@ export default function App() {
     return () => {
       eventSource.close();
     };
-  }, []);
+  }, [appSettings]);
 
   // Fetch Settings
   const loadSettings = async () => {
@@ -170,7 +199,58 @@ export default function App() {
   };
 
   // Fetch Emails
-  const loadEmails = async () => {
+  const loadEmails = async (providedSettings?: AppSettings) => {
+    const activeSettings = providedSettings || appSettings;
+    const url = activeSettings.supabaseUrl;
+    const key = activeSettings.supabaseKey;
+
+    if (url && key) {
+      try {
+        const supabase = createClient(url, key);
+        const { data, error } = await supabase.from('emails').select('*').order('date', { ascending: false });
+        if (!error && data) {
+          const mapped: Email[] = data.map((email: any) => {
+            let fromName = '';
+            let fromAddress = email.sender || '';
+            if (email.sender && email.sender.includes('<')) {
+              const match = email.sender.match(/^(.*?)\s*<(.*?)>/);
+              if (match) {
+                fromName = match[1].trim();
+                fromAddress = match[2].trim();
+              }
+            }
+            return {
+              ...email,
+              fromName: fromName || fromAddress,
+              fromAddress: fromAddress,
+              tags: typeof email.tags === 'string' ? JSON.parse(email.tags || '[]') : (email.tags || [])
+            };
+          });
+
+          setTickets(mapped);
+
+          // Retain selection if valid, otherwise select the first email
+          if (mapped.length > 0) {
+            setSelectedEmail(prev => {
+              if (prev) {
+                const current = mapped.find(e => e.message_id === prev.message_id);
+                if (current) return current;
+              }
+              return mapped[0];
+            });
+          } else {
+            setSelectedEmail(null);
+          }
+          await loadFolders();
+          return;
+        } else if (error) {
+          console.warn('Direct Supabase fetch failed, falling back to local API', error);
+        }
+      } catch (err) {
+        console.error('Direct Supabase fetch exception:', err);
+      }
+    }
+
     try {
       const res = await fetch('/api/emails');
       const data = await res.json();
@@ -189,11 +269,12 @@ export default function App() {
           return {
             ...email,
             fromName: fromName || fromAddress,
-            fromAddress: fromAddress
+            fromAddress: fromAddress,
+            tags: typeof email.tags === 'string' ? JSON.parse(email.tags || '[]') : (email.tags || [])
           };
         });
 
-        setEmails(mapped);
+        setTickets(mapped);
 
         // Retain selection if valid, otherwise select the first email
         if (mapped.length > 0) {
@@ -238,7 +319,26 @@ export default function App() {
   };
 
   // Load custom filters
-  const loadCustomFilters = async () => {
+  const loadCustomFilters = async (providedSettings?: AppSettings) => {
+    const activeSettings = providedSettings || appSettings;
+    const url = activeSettings.supabaseUrl;
+    const key = activeSettings.supabaseKey;
+
+    if (url && key) {
+      try {
+        const supabase = createClient(url, key);
+        const { data, error } = await supabase.from('custom_filters').select('*');
+        if (!error && data) {
+          setCustomFilters(data);
+          return;
+        } else if (error) {
+          console.warn('Direct Supabase custom_filters fetch failed, falling back to local API', error);
+        }
+      } catch (err) {
+        console.error('Direct Supabase custom_filters fetch exception:', err);
+      }
+    }
+
     try {
       const res = await fetch('/api/custom-filters');
       const data = await res.json();
@@ -250,10 +350,67 @@ export default function App() {
     }
   };
 
+  // Initial Fetch & State Update from Supabase on Mount
   useEffect(() => {
-    loadSettings();
-    loadEmails();
-    loadCustomFilters();
+    const fetchInitialData = async () => {
+      try {
+        const settingsRes = await fetch('/api/settings');
+        const settingsData = await settingsRes.json();
+        let finalUrl = '';
+        let finalKey = '';
+        let finalSettings = null;
+        
+        if (settingsData.success && settingsData.settings) {
+          setAppSettings(settingsData.settings);
+          finalUrl = settingsData.settings.supabaseUrl;
+          finalKey = settingsData.settings.supabaseKey;
+          finalSettings = settingsData.settings;
+        }
+
+        if (finalUrl && finalKey) {
+          // Mount initial fetch to Supabase
+          const supabase = createClient(finalUrl, finalKey);
+          const { data, error } = await supabase.from('emails').select('*').order('date', { ascending: false });
+          if (!error && data) {
+            const mapped: Email[] = data.map((email: any) => {
+              let fromName = '';
+              let fromAddress = email.sender || '';
+              if (email.sender && email.sender.includes('<')) {
+                const match = email.sender.match(/^(.*?)\s*<(.*?)>/);
+                if (match) {
+                  fromName = match[1].trim();
+                  fromAddress = match[2].trim();
+                }
+              }
+              return {
+                ...email,
+                fromName: fromName || fromAddress,
+                fromAddress: fromAddress,
+                tags: typeof email.tags === 'string' ? JSON.parse(email.tags || '[]') : (email.tags || [])
+              };
+            });
+            setTickets(mapped);
+            if (mapped.length > 0) {
+              setSelectedEmail(mapped[0]);
+            }
+            await loadFolders();
+          } else {
+            console.error('Supabase initial fetch error, using local fallback:', error);
+            await loadEmails(settingsData.settings);
+          }
+        } else {
+          await loadEmails(settingsData.settings);
+        }
+        await loadCustomFilters(finalSettings || undefined);
+      } catch (err) {
+        console.error('Error in initial mount fetch:', err);
+        await loadEmails();
+        await loadCustomFilters();
+      }
+      await loadCustomFilters();
+    };
+
+    fetchInitialData();
   }, []);
 
   // Save Config Settings
@@ -339,6 +496,40 @@ export default function App() {
       setFilterMsg('Name, Action Folder Parent, and Action Folder Child are required.');
       return;
     }
+
+    const url = appSettings.supabaseUrl;
+    const key = appSettings.supabaseKey;
+    let savedToSupabase = false;
+    let newFilterObj: any = null;
+
+    if (url && key) {
+      try {
+        const supabase = createClient(url, key);
+        const payload = {
+          name: filterForm.name.trim(),
+          match_from: filterForm.match_from?.trim() || null,
+          match_subject: filterForm.match_subject?.trim() || null,
+          match_body: filterForm.match_body?.trim() || null,
+          action_parent: filterForm.action_parent.trim(),
+          action_child: filterForm.action_child.trim(),
+          trigger_api: filterForm.trigger_api
+        };
+        const { data, error } = await supabase.from('custom_filters').insert([payload]).select();
+        if (!error && data && data[0]) {
+          newFilterObj = data[0];
+          savedToSupabase = true;
+        } else if (error) {
+          console.error('[Supabase Save Filter Error]:', error);
+          setFilterMsg('Supabase Save Error: ' + error.message);
+          return;
+        }
+      } catch (err: any) {
+        console.error('[Supabase Save Filter Exception]:', err);
+        setFilterMsg('Supabase Exception: ' + err.message);
+        return;
+      }
+    }
+
     try {
       const res = await fetch('/api/custom-filters', {
         method: 'POST',
@@ -358,19 +549,69 @@ export default function App() {
           trigger_api: false
         });
         addToast('Rule Saved', 'Dynamic workflow tag filter registered.');
-        await loadCustomFilters();
+        
+        if (savedToSupabase && newFilterObj) {
+          setCustomFilters(prev => [...prev, newFilterObj]);
+        } else if (data.filter) {
+          setCustomFilters(prev => [...prev, data.filter]);
+        } else {
+          await loadCustomFilters();
+        }
         await loadEmails(); // reclassify
       } else {
-        setFilterMsg('Failed to save: ' + data.message);
+        if (!savedToSupabase) {
+          setFilterMsg('Failed to save: ' + data.message);
+        } else {
+          setFilterMsg('Filter rule saved to Supabase!');
+          setFilterForm({
+            name: '',
+            match_from: '',
+            match_subject: '',
+            match_body: '',
+            action_parent: '',
+            action_child: '',
+            trigger_api: false
+          });
+          await loadCustomFilters();
+          await loadEmails();
+        }
       }
     } catch (err: any) {
-      setFilterMsg('Error: ' + err.message);
+      if (!savedToSupabase) {
+        setFilterMsg('Error: ' + err.message);
+      } else {
+        setFilterMsg('Saved to Supabase. Local sync error: ' + err.message);
+      }
     }
   };
 
   // Delete Filter Rule
   const handleDeleteFilter = async (id: number) => {
     if (!confirm('Are you sure you want to delete this custom routing filter?')) return;
+    
+    const url = appSettings.supabaseUrl;
+    const key = appSettings.supabaseKey;
+    let deletedFromSupabase = false;
+
+    if (url && key) {
+      try {
+        const supabase = createClient(url, key);
+        const { error } = await supabase.from('custom_filters').delete().eq('id', id);
+        if (!error) {
+          deletedFromSupabase = true;
+          setCustomFilters(prev => prev.filter(f => f.id !== id));
+        } else {
+          console.error('[Supabase Delete Filter Error]:', error);
+          addToast('Delete Error', 'Failed to delete from Supabase: ' + error.message);
+          return;
+        }
+      } catch (err: any) {
+        console.error('[Supabase Delete Filter Exception]:', err);
+        addToast('Delete Error', 'Supabase exception: ' + err.message);
+        return;
+      }
+    }
+
     try {
       const res = await fetch('/api/custom-filters', {
         method: 'POST',
@@ -380,10 +621,19 @@ export default function App() {
       const data = await res.json();
       if (data.success) {
         addToast('Rule Deleted', 'Dynamic filter removed.');
-        await loadCustomFilters();
+        if (!deletedFromSupabase) {
+          setCustomFilters(prev => prev.filter(f => f.id !== id));
+        }
+      } else {
+        if (!deletedFromSupabase) {
+          addToast('Delete Alert', 'Failed to delete locally: ' + data.message);
+        }
       }
     } catch (err) {
       console.error('Failed to delete rule:', err);
+      if (!deletedFromSupabase) {
+        addToast('Delete Error', 'Network error deleting rule.');
+      }
     }
   };
 
@@ -395,7 +645,7 @@ export default function App() {
         const data = await res.json();
         if (data.success) {
           addToast('Inbox Flushed', 'Cached tickets cleared.');
-          setEmails([]);
+          setTickets([]);
           setSelectedEmail(null);
           await loadFolders();
         }
@@ -407,7 +657,7 @@ export default function App() {
 
   // Filters logic helper
   const getFilteredEmails = () => {
-    return emails.filter(email => {
+    return tickets.filter(email => {
       // 1. Folder filter
       if (selectedFolder === 'all') {
         // Show all
@@ -594,7 +844,7 @@ export default function App() {
                       <span>All Tickets</span>
                     </div>
                     <span className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-bold font-mono">
-                      {emails.length}
+                      {tickets.length}
                     </span>
                   </button>
 
@@ -1064,55 +1314,53 @@ export default function App() {
                       {customFilters.length === 0 ? (
                         <p className="text-xs text-slate-400 italic">No custom filter rules defined yet.</p>
                       ) : (
-                        <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-                          <table className="w-full text-xs text-left text-slate-600 divide-y divide-slate-100">
-                            <thead className="bg-slate-50 font-bold text-slate-400 text-[10px] uppercase tracking-wider">
-                              <tr>
-                                <th className="p-3.5">Rule Name & Matching Criteria</th>
-                                <th className="p-3.5">Target Folder Routing</th>
-                                <th className="p-3.5 text-center">API Trigger</th>
-                                <th className="p-3.5 text-right">Action</th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-100 bg-white">
-                              {customFilters.map(filter => (
-                                <tr key={filter.id} className="hover:bg-slate-50">
-                                  <td className="p-3.5 font-sans select-text">
-                                    <p className="font-bold text-slate-800 text-[13px]">{filter.name}</p>
-                                    <div className="text-[10px] text-slate-400 mt-1 space-y-0.5 font-mono leading-normal">
-                                      {filter.match_from && <p>From: "{filter.match_from}"</p>}
-                                      {filter.match_subject && <p>Subject: "{filter.match_subject}"</p>}
-                                      {filter.match_body && <p>Body: "{filter.match_body}"</p>}
-                                    </div>
-                                  </td>
-                                  <td className="p-3.5 font-medium">
-                                    <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded font-bold font-mono text-[10px] border border-blue-100">
-                                      {filter.action_parent} &gt; {filter.action_child}
-                                    </span>
-                                  </td>
-                                  <td className="p-3.5 text-center">
-                                    {filter.trigger_api ? (
-                                      <span className="text-emerald-600 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded text-[10px] font-bold uppercase inline-flex items-center gap-1">
-                                        <Zap className="h-3 w-3 fill-current" /> Active
-                                      </span>
-                                    ) : (
-                                      <span className="text-slate-400 font-bold uppercase text-[9px]">Disabled</span>
-                                    )}
-                                  </td>
-                                  <td className="p-3.5 text-right">
-                                    <button
-                                      type="button"
-                                      onClick={() => filter.id && handleDeleteFilter(filter.id)}
-                                      className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg cursor-pointer transition-colors"
-                                      title="Delete rule"
-                                    >
-                                      <Trash2 className="h-4 w-4" />
-                                    </button>
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          {customFilters.map(filter => (
+                            <div key={filter.id} className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow relative flex flex-col justify-between">
+                              <div>
+                                <div className="flex justify-between items-start">
+                                  <h4 className="font-bold text-slate-800 text-sm">{filter.name || '-'}</h4>
+                                  <button
+                                    type="button"
+                                    onClick={() => filter.id && handleDeleteFilter(filter.id)}
+                                    className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg cursor-pointer transition-colors"
+                                    title="Delete rule"
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </button>
+                                </div>
+                                <div className="mt-3 space-y-1.5 text-xs text-slate-600 border-t border-slate-100 pt-3">
+                                  <p className="flex justify-between gap-2">
+                                    <span className="font-semibold text-slate-500">Match Sender (From):</span>
+                                    <span className="font-mono text-slate-700 break-all">{filter.match_from || '-'}</span>
+                                  </p>
+                                  <p className="flex justify-between gap-2">
+                                    <span className="font-semibold text-slate-500">Match Subject:</span>
+                                    <span className="text-slate-700">{filter.match_subject || '-'}</span>
+                                  </p>
+                                  <p className="flex justify-between gap-2">
+                                    <span className="font-semibold text-slate-500">Match Body Text:</span>
+                                    <span className="text-slate-700">{filter.match_body || '-'}</span>
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
+                                <div className="flex items-center gap-1">
+                                  <span className="text-[10px] text-slate-400 font-bold uppercase">Routing:</span>
+                                  <span className="bg-blue-50 text-blue-700 px-2.5 py-1 rounded font-bold font-mono text-[10px] border border-blue-100">
+                                    {filter.action_parent || '-'} &gt; {filter.action_child || '-'}
+                                  </span>
+                                </div>
+                                {filter.trigger_api ? (
+                                  <span className="text-emerald-600 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded text-[10px] font-bold uppercase inline-flex items-center gap-1">
+                                    <Zap className="h-3 w-3 fill-current" /> Active
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-400 font-bold uppercase text-[9px]">Disabled</span>
+                                )}
+                              </div>
+                            </div>
+                          ))}
                         </div>
                       )}
                     </div>

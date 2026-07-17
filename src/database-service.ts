@@ -333,25 +333,38 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
-      const { error } = await supabase.from('emails').upsert({
-        message_id: normalizedEmail.message_id,
-        subject: normalizedEmail.subject,
-        sender: normalizedEmail.sender,
-        receiver: normalizedEmail.receiver,
-        date: normalizedEmail.date,
-        body_text: normalizedEmail.body_text,
-        html_body: normalizedEmail.html_body,
-        tags: normalizedEmail.tags,
-        category: normalizedEmail.category,
-        sub_category: normalizedEmail.sub_category,
-        folder_parent: normalizedEmail.folder_parent,
-        folder_child: normalizedEmail.folder_child,
-        api_workflow_status: normalizedEmail.api_workflow_status,
-        api_workflow_log: normalizedEmail.api_workflow_log
-      }, { onConflict: 'message_id' });
+      const message_id = normalizedEmail.message_id;
+      let dateIso = new Date().toISOString();
+      if (normalizedEmail.date) {
+        try {
+          dateIso = new Date(normalizedEmail.date).toISOString();
+        } catch (e) {
+          console.warn('[Supabase Worker] Invalid date value, defaulting to now:', normalizedEmail.date);
+        }
+      }
 
+      const payload = {
+        message_id: normalizedEmail.message_id !== undefined ? normalizedEmail.message_id : null,
+        subject: normalizedEmail.subject !== undefined ? normalizedEmail.subject : null,
+        sender: normalizedEmail.sender !== undefined ? normalizedEmail.sender : null,
+        receiver: normalizedEmail.receiver !== undefined ? normalizedEmail.receiver : null,
+        date: dateIso,
+        body_text: normalizedEmail.body_text !== undefined ? normalizedEmail.body_text : null,
+        html_body: normalizedEmail.html_body !== undefined ? normalizedEmail.html_body : null,
+        tags: normalizedEmail.tags !== undefined ? normalizedEmail.tags : null,
+        category: normalizedEmail.category !== undefined ? normalizedEmail.category : null,
+        sub_category: normalizedEmail.sub_category !== undefined ? normalizedEmail.sub_category : null,
+        folder_parent: normalizedEmail.folder_parent !== undefined ? normalizedEmail.folder_parent : null,
+        folder_child: normalizedEmail.folder_child !== undefined ? normalizedEmail.folder_child : null,
+        api_workflow_status: normalizedEmail.api_workflow_status !== undefined ? normalizedEmail.api_workflow_status : null,
+        api_workflow_log: normalizedEmail.api_workflow_log !== undefined ? normalizedEmail.api_workflow_log : null
+      };
+
+      const { error } = await supabase.from('emails').upsert(payload, { onConflict: 'message_id' });
       if (error) {
-        console.error('[Supabase Upsert Error]:', error);
+          console.error(`[Supabase Error] Failed to insert message ${message_id}:`, error.message, error.details);
+      } else {
+          // trigger real-time notification
       }
     } catch (err) {
       console.error('[Supabase Upsert Exception]:', err);
