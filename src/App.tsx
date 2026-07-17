@@ -131,7 +131,7 @@ const getTagBadgeStyle = (str: string) => {
 export default function App() {
   // Navigation
   const [currentMenu, setCurrentMenu] = useState<'inbox' | 'settings' | 'cit-dashboard'>('inbox');
-  const [settingsTab, setSettingsTab] = useState<'filters' | 'api' | 'mail' | 'backfill'>('filters');
+  const [settingsTab, setSettingsTab] = useState<'filters' | 'api' | 'mail' | 'backfill' | 'ai-health'>('filters');
   const [prefillEmail, setPrefillEmail] = useState<Email | null>(null);
 
   // Loaders and State
@@ -179,6 +179,17 @@ export default function App() {
   const [backfillProgress, setBackfillProgress] = useState<number>(0);
   const [isBackfillStreaming, setIsBackfillStreaming] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
+
+  // AI Health Check States
+  interface AiModelHealth {
+    model: string;
+    status: string;
+    latency?: string;
+    message?: string;
+  }
+  const [healthData, setHealthData] = useState<AiModelHealth[]>([]);
+  const [isCheckingHealth, setIsCheckingHealth] = useState(false);
+  const [healthError, setHealthError] = useState<string | null>(null);
 
   useEffect(() => {
     if (logsEndRef.current) {
@@ -708,6 +719,27 @@ export default function App() {
       });
     } finally {
       setIsTestingConn(false);
+    }
+  };
+
+  const handleRunHealthCheck = async () => {
+    setIsCheckingHealth(true);
+    setHealthError(null);
+    try {
+      const res = await fetch('/api/settings/ai-health');
+      const data = await res.json();
+      if (data.success && Array.isArray(data.health)) {
+        setHealthData(data.health);
+        addToast('AI Health Check Complete', 'Successfully retrieved latency and status for all active AI models.');
+      } else {
+        setHealthError(data.message || 'Failed to fetch AI health status');
+        addToast('Health Check Failed', 'An error occurred while connecting to the health diagnostic service.');
+      }
+    } catch (err: any) {
+      setHealthError(err.message || String(err));
+      addToast('Health Check Error', 'Could not establish connection to the health diagnostic server.');
+    } finally {
+      setIsCheckingHealth(false);
     }
   };
 
@@ -1996,6 +2028,21 @@ export default function App() {
                   <History className="h-4 w-4" />
                   <span>Data Backfill</span>
                 </button>
+
+                <button
+                  onClick={() => {
+                    setSettingsTab('ai-health');
+                    handleRunHealthCheck(); // Trigger health check on click as well
+                  }}
+                  className={`w-full flex items-center space-x-2 px-3 py-2.5 rounded-lg transition-all text-left font-semibold cursor-pointer ${
+                    settingsTab === 'ai-health' 
+                      ? 'bg-blue-50 text-blue-700' 
+                      : 'text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <Activity className="h-4 w-4" />
+                  <span>AI Settings & Status</span>
+                </button>
               </div>
             </aside>
 
@@ -2516,6 +2563,130 @@ export default function App() {
                               <div ref={logsEndRef} />
                             </div>
                           </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* TAB 5: AI SETTINGS & STATUS (HEALTH CHECK) */}
+                {settingsTab === 'ai-health' && (
+                  <div className="space-y-6">
+                    <div>
+                      <h2 className="text-sm font-bold text-slate-800">AI Model Connections & Health Status</h2>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        Lakukan diagnosis koneksi real-time untuk memverifikasi fungsionalitas, status aktif, dan latency model AI yang terintegrasi di platform.
+                      </p>
+                    </div>
+
+                    <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between">
+                      <div className="space-y-0.5">
+                        <p className="text-xs font-bold text-slate-700">Diagnostic Controller</p>
+                        <p className="text-[10px] text-slate-500">Pings NVIDIA integrate API endpoint with a light text workload.</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleRunHealthCheck}
+                        disabled={isCheckingHealth}
+                        className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 disabled:from-slate-400 disabled:to-slate-400 text-white font-bold rounded-lg cursor-pointer transition-all shadow-sm flex items-center gap-1.5 text-xs"
+                      >
+                        {isCheckingHealth ? (
+                          <>
+                            <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                            <span>Checking AI Status...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Activity className="h-3.5 w-3.5" />
+                            <span>Test All AI Connections</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+
+                    {healthError && (
+                      <div className="p-4 bg-red-50 border border-red-100 rounded-xl flex items-start space-x-2 text-xs text-red-700">
+                        <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                        <div className="space-y-1">
+                          <p className="font-bold">Diagnostic Server Error</p>
+                          <p className="font-mono text-[11px] bg-red-100/50 p-2 rounded border border-red-200/50">{healthError}</p>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="space-y-3">
+                      {healthData.length === 0 ? (
+                        <div className="text-center py-8 border border-dashed border-slate-200 rounded-xl bg-slate-50/50">
+                          <Activity className="h-8 w-8 text-slate-300 mx-auto mb-2 animate-pulse" />
+                          <p className="text-xs font-semibold text-slate-500">No diagnostic logs found yet</p>
+                          <p className="text-[10px] text-slate-400 mt-0.5">Click the "Test All AI Connections" button above to run real-time checks.</p>
+                        </div>
+                      ) : (
+                        <div className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-sm">
+                          <table className="w-full text-left text-xs border-collapse">
+                            <thead>
+                              <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold">
+                                <th className="p-3">Model Name</th>
+                                <th className="p-3">Role / Task</th>
+                                <th className="p-3">Status</th>
+                                <th className="p-3 text-right">Latency</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {healthData.map((item, index) => {
+                                const isHealthy = item.status === 'Active';
+                                const isTimeout = item.status === 'Timeout' || (item.latency && parseInt(item.latency, 10) > 15000);
+                                const isError = item.status === 'Error' || (!isHealthy && !isTimeout);
+
+                                return (
+                                  <tr key={index} className="hover:bg-slate-50/50 transition-all">
+                                    <td className="p-3">
+                                      <span className="font-mono font-bold text-slate-700">{item.model}</span>
+                                    </td>
+                                    <td className="p-3 text-slate-500">
+                                      {item.model === 'thinkingmachines/inkling' && 'Primary Extraction (Summary, Nominals, Currencies)'}
+                                      {item.model === 'minimaxai/minimax-m3' && 'Contextual Tagging (Tags, Urgency classification)'}
+                                      {item.model === 'z-ai/glm-5.2' && 'Fallback / Backfill Orchestrator'}
+                                    </td>
+                                    <td className="p-3">
+                                      {isHealthy && (
+                                        <span className="inline-flex items-center space-x-1 px-2 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold text-[10px]">
+                                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                          <span>Healthy</span>
+                                        </span>
+                                      )}
+                                      {isTimeout && (
+                                        <span className="inline-flex items-center space-x-1 px-2 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200 font-bold text-[10px]">
+                                          <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                                          <span>Timeout (&gt;15s)</span>
+                                        </span>
+                                      )}
+                                      {isError && (
+                                        <span className="inline-flex items-center space-x-1 px-2 py-1 rounded-full bg-rose-50 text-rose-700 border border-rose-200 font-bold text-[10px]">
+                                          <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
+                                          <span>Error</span>
+                                        </span>
+                                      )}
+                                      {item.message && (
+                                        <div className="text-[10px] text-rose-600 mt-1 font-mono break-all bg-rose-50/50 p-1.5 rounded border border-rose-100">
+                                          {item.message}
+                                        </div>
+                                      )}
+                                    </td>
+                                    <td className="p-3 text-right">
+                                      {item.latency ? (
+                                        <span className={`font-mono font-semibold ${isTimeout ? 'text-amber-600' : isError ? 'text-rose-500' : 'text-emerald-600'}`}>
+                                          {item.latency}
+                                        </span>
+                                      ) : (
+                                        <span className="text-slate-400 font-mono">-</span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
                         </div>
                       )}
                     </div>

@@ -42,7 +42,7 @@ Sistem ini didesain tangguh (*resilient*) menggunakan **Split-Task AI Architectu
                v                     v            | moonshotai/kimi-k2.6     |
       +------------------+  +------------------+  +--------------------------+
       | DATA EXTRACTOR   |  | CONTEXTUAL TAG   |               |
-      | Qwen 3.5 (397B)  |  | Kimi K2.6        |               v
+      | Inkling (NVIDIA)  |  | Minimax-M3        |               v
       +------------------+  +------------------+  +--------------------------+
                |                     |            |   SSE Live Log Stream    |
                +----------+----------+            |   & Progress Bar Client  |
@@ -72,15 +72,15 @@ Sistem ini didesain tangguh (*resilient*) menggunakan **Split-Task AI Architectu
 ### ⚙️ Detail Alur Kerja AI & Split-Task Processing
 1. **Event-Driven Processing:** Sistem meninggalkan metode polling Cron Job konvensional yang lambat. Ketika ada email baru yang masuk, sistem secara instan memicu Worker Node.js untuk memproses analisis AI secara asinkron.
 2. **Split-Task AI Processing (Parallel Multi-Model Extraction):**
-   * **Qwen 3.5 (397B) - Data Extractor:** Dipercaya sebagai mesin ekstraktor data utama berkat kapasitas parameternya yang sangat masif. Model ini ditugaskan secara **KHUSUS** untuk mengekstrak data operasional presisi tinggi: `summary`, `currency`, `total_amount`, dan `denomination_suggestion` serta informasi detail nominal lainnya.
-   * **Kimi K2.6 - Contextual Tagger:** Memiliki pemahaman bahasa kontekstual yang mendalam serta window context yang panjang. Model ini ditugaskan secara **KHUSUS** untuk menganalisis konteks percakapan lama (*reply thread*) serta menentukan klasifikasi `suggested_tag` (CIT/ATM/Lainnya), `urgency_level`, dan status `action_required`.
+   * **Inkling (NVIDIA) - Data Extractor:** Dipercaya sebagai mesin ekstraktor data utama berkat kapasitas parameternya yang sangat masif. Model ini ditugaskan secara **KHUSUS** untuk mengekstrak data operasional presisi tinggi: `summary`, `currency`, `total_amount`, dan `denomination_suggestion` serta informasi detail nominal lainnya.
+   * **Minimax-M3 - Contextual Tagger:** Memiliki pemahaman bahasa kontekstual yang mendalam serta window context yang panjang. Model ini ditugaskan secara **KHUSUS** untuk menganalisis konteks percakapan lama (*reply thread*) serta menentukan klasifikasi `suggested_tag` (CIT/ATM/Lainnya), `urgency_level`, dan status `action_required`.
    * **Concurrent Execution (`Promise.all`):** Kedua model AI tersebut dieksekusi secara bersamaan (paralel) dari backend untuk mencegah hambatan latency (overhead waktu) sehingga pemrosesan berlangsung sangat responsif, lalu keluarannya digabungkan (*merge*) secara rapi.
-   * **Optimasi Payload & Timeout:** Untuk mempercepat respons AI, payload `messages` dibersihkan dan hanya menyertakan teks pesan murni (`body_text`) tanpa menyertakan Base64 attachments berukuran besar. Konfigurasi `timeout: 60000` (60 detik) diterapkan di level Axios untuk menjamin kestabilan pemrosesan model raksasa Qwen 397B saat mengekstrak struktur data denominasi yang rumit.
-3. **Mekanisme Failover Otomatis & Rotator Khusus Tagging (High Availability):**
-   * **Rotator Khusus Tagging:** Jika model "moonshotai/kimi-k2.6" mengalami kegagalan (seperti 404, Timeout, atau Rate Limit), sistem secara otomatis menangkap error tersebut dan melakukan *failover* instan ke model **nvidia/llama-3.1-nemotron-nano-vl-8b-v1** (max_tokens: 1024, temperature: 1) untuk menjamin kelangsungan pipeline.
-   * **Rotator Pool Backup:** Jika kedua model Qwen/Kimi paralel mengalami hambatan total, sistem secara dinamis mengalihkan seluruh tugas ke rotator pool utama yang berisi **z-ai/glm-5.2**, **nvidia/nemotron-340b-instruct**, atau **google/gemma-2-27b-it**.
+   * **Optimasi Payload & Timeout:** Untuk mempercepat respons AI, payload `messages` dibersihkan dan hanya menyertakan teks pesan murni (`body_text`) tanpa menyertakan Base64 attachments berukuran besar. Konfigurasi `timeout: 60000` (60 detik) diterapkan di level Axios untuk menjamin kestabilan pemrosesan model raksasa Inkling saat mengekstrak struktur data denominasi yang rumit.
+3. **Mekanisme Failover Otomatis (High Availability):**
+   * **Rotator Pool Backup:** Jika salah satu model Inkling/Minimax mengalami gangguan, sistem secara dinamis mengalihkan seluruh tugas ke rotator pool utama yang berisi **z-ai/glm-5.2**, **nvidia/nemotron-340b-instruct**, atau **google/gemma-2-27b-it**.
    * **Rule-Based Fallback:** Sebagai pertahanan terakhir, sistem didukung algoritma parsing reguler (*Regex*) untuk mengekstrak data dasar sehingga data tetap berhasil ter-input dengan aman.
 4. **Heavy-Duty Backfill Model (`moonshotai/kimi-k2.6`):** Digunakan khusus untuk memproses pengolahan ulang ribuan data historis yang kosong di latar belakang secara real-time via Server-Sent Events (SSE).
+5. **AI Connection Health Diagnostics:** Sistem menyediakan fitur halaman **AI Settings & Status** untuk mendiagnosis koneksi ke masing-masing model (Inkling, Minimax, GLM-5.2) secara real-time dengan melacak Latency (respon ms) menggunakan API endpoint `/api/settings/ai-health`.
 
 ---
 
@@ -89,6 +89,7 @@ Sistem ini didesain tangguh (*resilient*) menggunakan **Split-Task AI Architectu
 | Fitur | Deskripsi | Teknologi Pendukung |
 | :--- | :--- | :--- |
 | **🤖 Smart JSON Extraction** | Secara otomatis mem-parsing body email (bahkan thread percakapan yang panjang) dan mengubahnya menjadi form terstruktur yang berisi mata uang, total nominal, pecahan denominasi, urgensi, dan tag operasional. | NVIDIA NIM, AI Model Rotator |
+| **🟢 AI Settings & Status** | Menu diagnosis kesehatan (Health Check) koneksi real-time untuk memverifikasi fungsionalitas, status aktif, dan latency model-model AI (Inkling, Minimax-M3, GLM-5.2). | Promise.allSettled, Diagnostics API |
 | **📧 Gmail-Style UI** | Tampilan surat masuk yang bersih dan minimalis menyerupai inbox Gmail. Menggunakan teknik DOM manipulation untuk mendeteksi riwayat percakapan lama (`> quote`) dan menyembunyikannya ke dalam tombol collapsible `...` agar UI tetap rapi. | React, Tailwinds CSS |
 | **📎 Serverless Base64 Attachments** | Berkas lampiran gambar atau PDF tidak disimpan dalam bucket cloud eksternal. Sistem mengonversi lampiran langsung menjadi Base64 string terkompresi (maks 3MB) ke dalam PostgreSQL. Client me-render thumbnail interaktif yang siap diunduh. | SQLite, Supabase Engine |
 | **🔄 Real-time Historical Backfill** | Fitur singkronisasi email historis asinkron menggunakan Server-Sent Events (SSE). UI menampilkan Log Terminal & Progress Bar yang ter-update secara real-time dari data stream backend dengan delay otomatis pencegah rate limit. | EventSource API, Express SSE |

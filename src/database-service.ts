@@ -478,18 +478,18 @@ function parseCleanJson(text: string): any {
   return JSON.parse(cleaned);
 }
 
-async function getSummaryFromQwen(
+async function getSummaryFromInkling(
   emailBody: string,
   apiKey: string
 ): Promise<any> {
-  const invokeUrl = "https://integrate.api.nvidia.com/v1/chat/completions";
-  const headers = {
-    "Authorization": `Bearer ${apiKey}`,
-    "Accept": "application/json",
-    "Content-Type": "application/json"
-  };
+  const actualKey = process.env.NVIDIA_API_KEY_INKLING || apiKey || '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';
+  const openai = new OpenAI({
+    apiKey: actualKey,
+    baseURL: 'https://integrate.api.nvidia.com/v1',
+    timeout: 60000,
+  });
 
-  const systemContent = `Anda adalah asisten data operasional cerdas berbasis model raksasa Qwen 3.5 397B. Ekstrak data operasional penting dari email ke dalam format JSON. Anda harus mengembalikan JSON murni tanpa markdown, tanpa teks penjelasan apa pun di luar JSON.
+  const systemContent = `Anda adalah asisten data operasional cerdas berbasis model thinkingmachines/inkling. Ekstrak data operasional penting dari email ke dalam format JSON. Anda harus mengembalikan JSON murni tanpa markdown, tanpa teks penjelasan apa pun di luar JSON.
 
 JSON schema:
 {
@@ -503,39 +503,39 @@ JSON schema:
   "extracted_notes": "Instruksi khusus atau catatan operasional"
 }`;
 
-  const payload = {
-    "model": "qwen/qwen3.5-397b-a17b",
-    "messages": [
-      { "role": "system", "content": systemContent },
-      { "role": "user", "content": emailBody }
-    ],
-    "max_tokens": 16384,
-    "temperature": 0.6,
-    "top_p": 0.95
-  };
-
   try {
-    const response = await axios.post(invokeUrl, payload, { headers, timeout: 60000 });
-    const content = response.data.choices[0]?.message?.content || '';
+    const completion = await openai.chat.completions.create({
+      model: "thinkingmachines/inkling",
+      messages: [
+        { role: "system", content: systemContent },
+        { role: "user", content: emailBody }
+      ],
+      temperature: 1,
+      top_p: 0.95,
+      max_tokens: 8192,
+      stream: false
+    });
+    const content = completion.choices[0]?.message?.content || '';
     return parseCleanJson(content);
   } catch (error: any) {
-    console.error("[Qwen Extraction Error]:", error.message || error);
+    console.error("[Inkling Extraction Error]:", error.message || error);
     return null;
   }
 }
 
-async function getTaggingFromKimi(
+async function getTaggingFromMinimax(
   emailBody: string,
   apiKey: string
 ): Promise<any> {
   const invokeUrl = "https://integrate.api.nvidia.com/v1/chat/completions";
+  const actualKey = process.env.NVIDIA_API_KEY_MINIMAX || apiKey || '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';
   const headers = {
-    "Authorization": `Bearer ${apiKey}`,
+    "Authorization": `Bearer ${actualKey}`,
     "Accept": "application/json",
     "Content-Type": "application/json"
   };
 
-  const systemContent = `Anda adalah asisten analisis konteks panjang berbasis model Kimi k2.6. Analisis email secara mendalam dan tentukan klasifikasi tag serta urgensinya ke dalam format JSON murni tanpa markdown, tanpa teks penjelasan di luar JSON.
+  const systemContent = `Anda adalah asisten analisis konteks panjang berbasis model minimaxai/minimax-m3. Analisis email secara mendalam dan tentukan klasifikasi tag serta urgensinya ke dalam format JSON murni tanpa markdown, tanpa teks penjelasan di luar JSON.
 
 JSON schema:
 {
@@ -544,58 +544,36 @@ JSON schema:
   "action_required": true | false
 }`;
 
-  // Try Kimi first with 60s timeout
   try {
-    console.log("[AI Worker - Tagging] Attempting Kimi k2.6...");
+    console.log("[AI Worker - Tagging] Attempting Minimax m3...");
     const payload = {
-      "model": "moonshotai/kimi-k2.6",
+      "model": "minimaxai/minimax-m3",
       "messages": [
         { "role": "system", "content": systemContent },
         { "role": "user", "content": emailBody }
       ],
-      "max_tokens": 16384,
-      "temperature": 0.6,
-      "top_p": 1
+      "temperature": 1,
+      "top_p": 0.95,
+      "max_tokens": 8192,
+      "stream": false
     };
 
     const response = await axios.post(invokeUrl, payload, { headers, timeout: 60000 });
     const content = response.data.choices[0]?.message?.content || '';
     return parseCleanJson(content);
-  } catch (kimiError: any) {
-    console.warn("[Kimi Tagging Error] Kimi k2.6 failed (404/Timeout/Limit). Fallback to Nemotron Nano...", kimiError.message || kimiError);
-    
-    // Fallback to nvidia/llama-3.1-nemotron-nano-vl-8b-v1
-    try {
-      const payload = {
-        "model": "nvidia/llama-3.1-nemotron-nano-vl-8b-v1",
-        "messages": [
-          { "role": "system", "content": systemContent },
-          { "role": "user", "content": emailBody }
-        ],
-        "temperature": 1,
-        "top_p": 0.01,
-        "max_tokens": 1024,
-        "seed": 50
-      };
-
-      const response = await axios.post(invokeUrl, payload, { headers, timeout: 60000 });
-      const content = response.data.choices[0]?.message?.content || '';
-      return parseCleanJson(content);
-    } catch (nemotronError: any) {
-      console.error("[Nemotron Tagging Error] Fallback to Nemotron Nano also failed:", nemotronError.message || nemotronError);
-      
-      // Return safe defaults so worker doesn't crash
-      return {
-        suggested_tag: "Lainnya",
-        urgency_level: "Routine",
-        action_required: false
-      };
-    }
+  } catch (minimaxError: any) {
+    console.error("[Minimax Tagging Error]:", minimaxError.message || minimaxError);
+    // Return safe defaults so worker doesn't crash
+    return {
+      suggested_tag: "Lainnya",
+      urgency_level: "Routine",
+      action_required: false
+    };
   }
 }
 
 /**
- * Processes email text body using NVIDIA API and Split-Task AI Architecture (Qwen + Kimi)
+ * Processes email text body using NVIDIA API and Split-Task AI Architecture (Inkling + Minimax-M3)
  */
 export async function processEmailWithNvidia(
   emailSubject: string, 
@@ -615,7 +593,7 @@ export async function processEmailWithNvidia(
   currency?: string;
   denomination_suggestion?: number;
   total_amount?: number;
-}> {
+ }> {
   const attachmentListStr = Array.isArray(attachments) && attachments.length > 0
     ? attachments.map(att => `${att.filename || 'File'} (${att.contentType || 'unknown'}, ${att.size || 0} bytes)`).join('\n')
     : 'None';
@@ -623,20 +601,20 @@ export async function processEmailWithNvidia(
   const apiKey = process.env.NVIDIA_API_KEY || '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';
 
   try {
-    console.log("[AI Worker] Processing Parallel Multi-Model Extraction (Qwen 3.5 397B + Kimi K2.6)...");
+    console.log("[AI Worker] Processing Parallel Multi-Model Extraction (Thinkingmachines Inkling + Minimax M3)...");
     
-    // Call Qwen and Kimi simultaneously
-    const [qwenData, kimiData] = await Promise.all([
-      getSummaryFromQwen(emailBody, apiKey),
-      getTaggingFromKimi(emailBody, apiKey)
+    // Call Inkling and Minimax simultaneously
+    const [inklingData, minimaxData] = await Promise.all([
+      getSummaryFromInkling(emailBody, apiKey),
+      getTaggingFromMinimax(emailBody, apiKey)
     ]);
 
     let parsed: any = null;
 
-    if (qwenData || kimiData) {
+    if (inklingData || minimaxData) {
       parsed = {
-        ...(qwenData || {}),
-        ...(kimiData || {})
+        ...(inklingData || {}),
+        ...(minimaxData || {})
       };
       console.log("[AI Worker] Successfully merged parallel AI outputs.");
     } else {

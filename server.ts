@@ -99,6 +99,93 @@ async function startServer() {
     }
   });
 
+  // Helper to ping a model for AI Health Check
+  async function pingModel(modelName: string, apiKey: string, defaultKey: string) {
+    const start = Date.now();
+    let actualKey = process.env.NVIDIA_API_KEY || apiKey || defaultKey;
+    if (modelName === "thinkingmachines/inkling" && process.env.NVIDIA_API_KEY_INKLING) {
+      actualKey = process.env.NVIDIA_API_KEY_INKLING;
+    } else if (modelName === "minimaxai/minimax-m3" && process.env.NVIDIA_API_KEY_MINIMAX) {
+      actualKey = process.env.NVIDIA_API_KEY_MINIMAX;
+    }
+    
+    try {
+      const payload = {
+        model: modelName,
+        messages: [{ role: "user", content: "Balas dengan kata 'OK' saja tanpa tanda baca." }],
+        max_tokens: 10,
+        temperature: 0.1
+      };
+
+      const response = await axios.post(
+        "https://integrate.api.nvidia.com/v1/chat/completions",
+        payload,
+        {
+          headers: {
+            "Authorization": `Bearer ${actualKey}`,
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+          },
+          timeout: 15000 // 15 second timeout for health check
+        }
+      );
+
+      const latency = Date.now() - start;
+      if (response.status === 200) {
+        return {
+          model: modelName,
+          status: "Active",
+          latency: `${latency}ms`
+        };
+      } else {
+        return {
+          model: modelName,
+          status: "Error",
+          message: `HTTP Status ${response.status}`,
+          latency: `${latency}ms`
+        };
+      }
+    } catch (err: any) {
+      const latency = Date.now() - start;
+      let errMsg = err.message || String(err);
+      if (err.response) {
+        errMsg = `HTTP ${err.response.status}: ${typeof err.response.data === 'object' ? JSON.stringify(err.response.data) : String(err.response.data)}`;
+      }
+      return {
+        model: modelName,
+        status: latency >= 15000 ? "Timeout" : "Error",
+        message: errMsg,
+        latency: `${latency}ms`
+      };
+    }
+  }
+
+  // GET AI Health Check Endpoint
+  app.get("/api/settings/ai-health", async (req, res) => {
+    try {
+      const results = await Promise.all([
+        pingModel(
+          "thinkingmachines/inkling",
+          "",
+          "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"
+        ),
+        pingModel(
+          "minimaxai/minimax-m3",
+          "",
+          "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"
+        ),
+        pingModel(
+          "z-ai/glm-5.2",
+          "",
+          "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"
+        )
+      ]);
+      res.json({ success: true, health: results });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
   // Get saved emails from active DB (Supabase if credentials filled, otherwise SQLite)
   app.get("/api/emails", async (req, res) => {
     try {
