@@ -1,0 +1,80 @@
+import OpenAI from 'openai';
+import dotenv from 'dotenv';
+
+// Load environment variables
+dotenv.config();
+
+export interface ModelConfig {
+  name: string;
+  id: string;
+  apiKey: string | undefined;
+}
+
+const MODELS: ModelConfig[] = [
+  {
+    name: 'ThinkingMachines',
+    id: 'thinkingmachines/inkling',
+    apiKey: process.env.NVIDIA_API_KEY_THINKINGMACHINES || process.env.NVIDIA_API_KEY || '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'
+  },
+  {
+    name: 'Nemotron',
+    id: 'nvidia/llama-3.1-nemotron-70b-instruct',
+    apiKey: process.env.NVIDIA_API_KEY_NEMOTRON || process.env.NVIDIA_API_KEY || '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'
+  },
+  {
+    name: 'Gemma',
+    id: 'google/gemma-2-9b-it',
+    apiKey: process.env.NVIDIA_API_KEY_GEMMA || process.env.NVIDIA_API_KEY || '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'
+  }
+];
+
+/**
+ * Executes a completion across NVIDIA models with Auto-Model Rotation.
+ * If one model fails, it automatically continues to the next model in rotation.
+ * 
+ * Supports both a raw string prompt or structured OpenAI messages array.
+ */
+export async function getAiCompletion(prompt: string | any[]): Promise<string> {
+  const messages = typeof prompt === 'string'
+    ? [{ role: 'user', content: prompt }]
+    : prompt;
+
+  let lastError: Error | null = null;
+
+  for (const model of MODELS) {
+    try {
+      console.log(`[AI Rotator] Attempting generation with model: ${model.name} (${model.id})`);
+      if (!model.apiKey) {
+        throw new Error(`API Key for model ${model.name} is not configured.`);
+      }
+
+      const openai = new OpenAI({
+        apiKey: model.apiKey,
+        baseURL: 'https://integrate.api.nvidia.com/v1',
+      });
+
+      const completion = await openai.chat.completions.create({
+        model: model.id,
+        messages: messages,
+        temperature: 1,
+        top_p: 0.95,
+        max_tokens: 4096,
+        stream: false
+      });
+
+      const rawContent = completion.choices[0]?.message?.content || '';
+      if (!rawContent) {
+        throw new Error(`Empty response from model: ${model.name}`);
+      }
+
+      console.log(`[AI Rotator] Success with model: ${model.name}`);
+      return rawContent;
+    } catch (err: any) {
+      console.warn(`[AI Rotator] Error with model ${model.name}:`, err.message || String(err));
+      lastError = err;
+      continue; // Auto-rotate to next model
+    }
+  }
+
+  throw new Error(`All rotated AI models failed. Last error: ${lastError?.message || 'Unknown error'}`);
+}

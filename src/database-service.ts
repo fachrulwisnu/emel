@@ -5,6 +5,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { GoogleGenAI, Type } from '@google/genai';
 import OpenAI from 'openai';
 import { classifyEmail, classifyFolder } from './sqlite-db';
+import { getAiCompletion } from './services/aiService';
 
 const SETTINGS_FILE_PATH = path.join(process.cwd(), 'app_settings.json');
 const SQLITE_DB_PATH = path.join(process.cwd(), 'emails.db');
@@ -445,21 +446,10 @@ export async function processEmailWithNvidia(emailSubject: string, emailBody: st
   suggested_bank: string;
   extracted_notes: string;
 }> {
-  const apiKey = process.env.NVIDIA_API_KEY || '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';
-  const baseURL = 'https://integrate.api.nvidia.com/v1';
-
-  try {
-    const openai = new OpenAI({
-      apiKey,
-      baseURL,
-    });
-
-    const completion = await openai.chat.completions.create({
-      model: "thinkingmachines/inkling",
-      messages: [
-        {
-          role: "system",
-          content: `Anda adalah AI Asisten Operasional Ticketing. Tugas utama Anda adalah menganalisis email masuk, memberikan ringkasan, mendeteksi pesanan operasional (CIT/ATM), dan merutekan email tersebut ke Folder Region dan Branch yang tepat.
+  const messages = [
+    {
+      role: "system",
+      content: `Anda adalah AI Asisten Operasional Ticketing. Tugas utama Anda adalah menganalisis email masuk, memberikan ringkasan, mendeteksi pesanan operasional (CIT/ATM), dan merutekan email tersebut ke Folder Region dan Branch yang tepat.
 
 INSTRUKSI ANALISIS DASAR:
 1. Analisis 'subject' and 'body_text' secara mendalam.
@@ -502,21 +492,17 @@ CONTOH OUTPUT YANG DIHARAPKAN:
   "suggested_bank": "BCA",
   "extracted_notes": "Revisi setor ACMD & AVBT Reguler SLA Medan"
 }`
-        },
-        {
-          role: "user",
-          content: `Subject: ${emailSubject || "(No Subject)"}\n\nBody:\n${emailBody || "(No Content)"}`
-        }
-      ],
-      temperature: 1,
-      top_p: 0.95,
-      max_tokens: 8192,
-      stream: false
-    });
+    },
+    {
+      role: "user",
+      content: `Subject: ${emailSubject || "(No Subject)"}\n\nBody:\n${emailBody || "(No Content)"}`
+    }
+  ];
 
-    const rawContent = completion.choices[0]?.message?.content || "";
+  try {
+    const rawContent = await getAiCompletion(messages);
     if (!rawContent) {
-      throw new Error("Empty response from NVIDIA API");
+      throw new Error("Empty response returned from rotated AI services");
     }
 
     // Parse JSON robustly
@@ -538,8 +524,20 @@ CONTOH OUTPUT YANG DIHARAPKAN:
       extracted_notes: parsed.extracted_notes !== undefined ? String(parsed.extracted_notes) : ""
     };
   } catch (err: any) {
-    console.error('[AI Copilot] NVIDIA API Error:', err.message || String(err));
-    throw err;
+    console.error('[AI Copilot] All rotated models failed or JSON parse error. Falling back to default values. Error:', err.message || String(err));
+    // Return graceful defaults so the worker keeps running without crashing
+    return {
+      summary: "Gagal menganalisis email (semua model AI rotator gagal atau format tidak valid).",
+      action_required: false,
+      urgency_level: "Routine",
+      suggested_tag: "Informasi",
+      suggested_folder_parent: "Operation",
+      suggested_folder_child: "General",
+      is_cit_order: false,
+      cit_type: "None",
+      suggested_bank: "",
+      extracted_notes: ""
+    };
   }
 }
 

@@ -119,6 +119,12 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
               ? `${fromVal.name} <${fromVal.address}>` 
               : (fromVal.address || 'Unknown Sender');
 
+            // FILTER SPAM EASYGO
+            if (subject.toLowerCase().includes('easygo') || senderStr.toLowerCase().includes('easygo')) {
+              console.log(`[Cron Sync] Skipping easygo spam email: Subject="${subject}", Sender="${senderStr}"`);
+              continue;
+            }
+
             const toVal = (parsed.to as any)?.value?.[0] || (parsed.to as any)?.[0] || {};
             const receiverStr = toVal.address || 'fachrul.wisnu@advantagescm.com';
 

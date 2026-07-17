@@ -452,16 +452,20 @@ export default function CitDashboard({
                       </span>
                     </td>
                     <td className="py-4 px-5 text-right">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleRowClick(order);
-                        }}
-                        className="p-1 hover:bg-slate-100 text-slate-400 hover:text-slate-600 rounded transition-all cursor-pointer"
-                        title="View Route Details"
-                      >
-                        <ChevronRight className="h-4 w-4" />
-                      </button>
+                      <div className="flex justify-end gap-1.5">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRowClick(order);
+                          }}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 hover:text-blue-800 rounded-md text-[11px] font-bold transition-all cursor-pointer shadow-sm border border-blue-200"
+                          title="View Dispatch Details"
+                        >
+                          <Info className="h-3 w-3 shrink-0" />
+                          <span>Detail</span>
+                          <ChevronRight className="h-3 w-3 shrink-0 ml-0.5" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))
