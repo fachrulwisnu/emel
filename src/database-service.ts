@@ -409,10 +409,11 @@ function ruleBasedFallback(subject: string, bodyText: string): {
 /**
  * Processes email text body using NVIDIA API and thinkingmachines/inkling model
  */
-export async function processEmailWithNvidia(emailBody: string): Promise<{
+export async function processEmailWithNvidia(emailSubject: string, emailBody: string): Promise<{
   summary: string;
   action_required: boolean;
   urgency_level: string;
+  suggested_tag: string;
 }> {
   const apiKey = process.env.NVIDIA_API_KEY || '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';
   const baseURL = 'https://integrate.api.nvidia.com/v1';
@@ -428,11 +429,26 @@ export async function processEmailWithNvidia(emailBody: string): Promise<{
       messages: [
         {
           role: "system",
-          content: "Anda asisten operasional. Analisis email dan berikan JSON: {summary: string, action_required: boolean, urgency_level: string}"
+          content: `Anda adalah AI Asisten Operasional untuk sistem "Workflow Email Ticketing". Tugas Anda adalah menganalisis setiap email masuk dan mengubahnya menjadi data terstruktur untuk database kami.
+
+Instruksi Analisis:
+1. Analisis konten email (subject dan body) secara mendalam.
+2. Tentukan hal-hal berikut:
+   - Summary: Ringkasan inti email dalam 1-2 kalimat (bahasa Indonesia).
+   - Action_required: Boolean (true jika email mengandung instruksi, permintaan, atau tugas; false jika hanya informasi).
+   - Urgency_level: Klasifikasi menjadi "High", "Medium", atau "Low" berdasarkan konten instruksi/tenggat waktu.
+   - Suggested_tag: Berikan tag yang paling relevan (Contoh: "Penugasan", "Informasi", "Geofence", "Rekap", "Update Data").
+
+Format Output:
+- Anda WAJIB memberikan jawaban dalam format JSON MURNI tanpa teks pembuka, tanpa penjelasan, dan tanpa markdown (tidak boleh ada \`\`\`json ... \`\`\`).
+- Pastikan formatnya selalu valid untuk di-parse oleh JSON.parse().
+
+Contoh Output:
+{"summary": "Permintaan droping tunai untuk PT Djarum tanggal 20 Juli 2026.", "action_required": true, "urgency_level": "High", "suggested_tag": "Penugasan"}`
         },
         {
           role: "user",
-          content: emailBody || "(No content)"
+          content: `Subject: ${emailSubject || "(No Subject)"}\n\nBody:\n${emailBody || "(No Content)"}`
         }
       ],
       temperature: 1,
@@ -447,7 +463,6 @@ export async function processEmailWithNvidia(emailBody: string): Promise<{
     }
 
     // Parse JSON robustly
-    // Sometimes models wrap JSON in markdown block: ```json ... ```
     let cleanJson = rawContent.trim();
     if (cleanJson.startsWith("```")) {
       cleanJson = cleanJson.replace(/^```json\s*/i, "").replace(/```$/, "").trim();
@@ -456,7 +471,8 @@ export async function processEmailWithNvidia(emailBody: string): Promise<{
     return {
       summary: parsed.summary !== undefined ? String(parsed.summary) : "",
       action_required: parsed.action_required === true || parsed.action_required === "true",
-      urgency_level: parsed.urgency_level !== undefined ? String(parsed.urgency_level) : "Routine"
+      urgency_level: parsed.urgency_level !== undefined ? String(parsed.urgency_level) : "Routine",
+      suggested_tag: parsed.suggested_tag !== undefined ? String(parsed.suggested_tag) : "Informasi"
     };
   } catch (err: any) {
     console.error('[AI Copilot] NVIDIA API Error:', err.message || String(err));
@@ -471,12 +487,14 @@ export async function syncAndAnalyzeEmail(email: Email): Promise<void> {
   let summary = "";
   let action_required = false;
   let urgency_level = "Routine";
+  let suggested_tag = "Informasi";
 
   try {
-    const aiResult = await processEmailWithNvidia(email.body_text || "");
+    const aiResult = await processEmailWithNvidia(email.subject || "", email.body_text || "");
     summary = aiResult.summary || `Email from ${email.sender} regarding ${email.subject}.`;
     action_required = !!aiResult.action_required;
     urgency_level = aiResult.urgency_level || "Routine";
+    suggested_tag = aiResult.suggested_tag || "Informasi";
 
     // 4. TAMPILAN TERMINAL:
     // Saat AI selesai memproses email, tampilkan log:
@@ -493,6 +511,7 @@ export async function syncAndAnalyzeEmail(email: Email): Promise<void> {
     summary = fallbackInfo.summary || `Email from ${email.sender}.`;
     action_required = false;
     urgency_level = "Routine";
+    suggested_tag = "Informasi";
   }
 
   // Combine results and ensure no undefined values are written
@@ -501,8 +520,8 @@ export async function syncAndAnalyzeEmail(email: Email): Promise<void> {
     summary,
     action_required,
     urgency_level,
-    tag_type: urgency_level,
-    suggested_tag: urgency_level,
+    tag_type: suggested_tag,
+    suggested_tag,
     is_important: urgency_level === 'High' || urgency_level === 'Peringatan'
   };
 
