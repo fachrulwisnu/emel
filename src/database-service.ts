@@ -1,6 +1,7 @@
 import sqlite3 from 'sqlite3';
 import path from 'path';
 import fs from 'fs';
+import axios from 'axios';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { GoogleGenAI, Type } from '@google/genai';
 import OpenAI from 'openai';
@@ -463,6 +464,114 @@ export function ruleBasedFallback(subject: string, bodyText: string): {
 /**
  * Processes email text body using NVIDIA API and thinkingmachines/inkling model
  */
+function parseCleanJson(text: string): any {
+  let cleaned = text.trim();
+  if (cleaned.startsWith("```json")) {
+    cleaned = cleaned.substring(7);
+  } else if (cleaned.startsWith("```")) {
+    cleaned = cleaned.substring(3);
+  }
+  if (cleaned.endsWith("```")) {
+    cleaned = cleaned.substring(0, cleaned.length - 3);
+  }
+  cleaned = cleaned.trim();
+  return JSON.parse(cleaned);
+}
+
+async function getSummaryFromQwen(
+  emailSubject: string,
+  emailBody: string,
+  attachmentsStr: string,
+  apiKey: string
+): Promise<any> {
+  const invokeUrl = "https://integrate.api.nvidia.com/v1/chat/completions";
+  const headers = {
+    "Authorization": `Bearer ${apiKey}`,
+    "Accept": "application/json",
+    "Content-Type": "application/json"
+  };
+
+  const systemContent = `Anda adalah asisten data operasional cerdas berbasis model raksasa Qwen 3.5 397B. Ekstrak data operasional penting dari email ke dalam format JSON. Anda harus mengembalikan JSON murni tanpa markdown, tanpa teks penjelasan apa pun di luar JSON.
+
+JSON schema:
+{
+  "summary": "Ringkasan email utama dan thread percakapan dalam Bahasa Indonesia",
+  "currency": "IDR" | "USD",
+  "total_amount": number | null,
+  "denomination_suggestion": number | null,
+  "suggested_bank": "BCA" | "MANDIRI" | "BRI" | "BNI" | "Lainnya" | "",
+  "suggested_folder_parent": "REGION 1" | "REGION 2" | "REGION 3" | "REGION 4" | "REGION 5" | "REGION 6",
+  "suggested_folder_child": "MEDAN" | "SURABAYA" | "JAKARTA" | "General" | "etc",
+  "extracted_notes": "Instruksi khusus atau catatan operasional"
+}`;
+
+  const payload = {
+    "model": "qwen/qwen3.5-397b-a17b",
+    "messages": [
+      { "role": "system", "content": systemContent },
+      { "role": "user", "content": `Subject: ${emailSubject}\n\nBody:\n${emailBody}\n\nAttachments:\n${attachmentsStr}` }
+    ],
+    "max_tokens": 2048,
+    "temperature": 0.2,
+    "top_p": 0.95
+  };
+
+  try {
+    const response = await axios.post(invokeUrl, payload, { headers, timeout: 25000 });
+    const content = response.data.choices[0]?.message?.content || '';
+    return parseCleanJson(content);
+  } catch (error: any) {
+    console.error("[Qwen Extraction Error]:", error.message || error);
+    return null;
+  }
+}
+
+async function getTaggingFromKimi(
+  emailSubject: string,
+  emailBody: string,
+  attachmentsStr: string,
+  apiKey: string
+): Promise<any> {
+  const invokeUrl = "https://integrate.api.nvidia.com/v1/chat/completions";
+  const headers = {
+    "Authorization": `Bearer ${apiKey}`,
+    "Accept": "application/json",
+    "Content-Type": "application/json"
+  };
+
+  const systemContent = `Anda adalah asisten analisis konteks panjang berbasis model Kimi k2.6. Analisis email secara mendalam dan tentukan klasifikasi tag serta urgensinya ke dalam format JSON murni tanpa markdown, tanpa teks penjelasan di luar JSON.
+
+JSON schema:
+{
+  "suggested_tag": "CIT" | "ATM" | "Lainnya",
+  "urgency_level": "High" | "Medium" | "Routine",
+  "action_required": true | false
+}`;
+
+  const payload = {
+    "model": "moonshotai/kimi-k2.6",
+    "messages": [
+      { "role": "system", "content": systemContent },
+      { "role": "user", "content": `Subject: ${emailSubject}\n\nBody:\n${emailBody}\n\nAttachments:\n${attachmentsStr}` }
+    ],
+    "max_tokens": 1500,
+    "temperature": 0.2,
+    "top_p": 1
+  };
+
+  try {
+    const response = await axios.post(invokeUrl, payload, { headers, timeout: 25000 });
+    const content = response.data.choices[0]?.message?.content || '';
+    return parseCleanJson(content);
+  } catch (error: any) {
+    console.error("[Kimi Tagging Error]:", error.message || error);
+    return null;
+  }
+}
+
+/**
+ * Processes email text body using NVIDIA API and Split-Task AI Architecture (Qwen + Kimi)
+ */
 export async function processEmailWithNvidia(
   emailSubject: string, 
   emailBody: string,
@@ -486,74 +595,48 @@ export async function processEmailWithNvidia(
     ? attachments.map(att => `${att.filename || 'File'} (${att.contentType || 'unknown'}, ${att.size || 0} bytes)`).join('\n')
     : 'None';
 
-  const messages = [
-    {
-      role: "system",
-      content: `Anda adalah AI Asisten Operasional Ticketing dan Dispatch. Tugas Anda adalah menganalisis data email mentah (Raw Data) yang mencakup isi pesan, riwayat percakapan (reply thread), dan daftar lampiran.
-
-INSTRUKSI ANALISIS:
-1. FULL THREAD ANALYSIS: Baca email secara utuh dari atas sampai bawah. Deteksi riwayat percakapan sebelumnya (reply) untuk memahami konteks masalah.
-2. DETEKSI ATTACHMENT: Analisis daftar lampiran yang diberikan. Jika ada file seperti "Bon", "Bukti", "Foto", "Surat", atau "Form", identifikasikan sebagai bagian dari bukti operasional.
-3. KLASIFIKASI CIT/ATM & EKSTRAKSI DETAIL:
-   - Jika email berisi instruksi uang/CIT/ATM, deteksi lokasi, nominal, dan tanggal yang disebutkan di dalam thread percakapan.
-   - Set 'is_cit_order': true jika ada instruksi operasional.
-   - Set 'suggested_tag' menjadi "CIT" atau "ATM" jika terkait. Jika tidak terkait CIT/ATM, set menjadi "Lainnya".
-   - Tentukan 'suggested_folder_parent' (REGION) dan 'suggested_folder_child' (BRANCH) berdasarkan domain/alamat pengirim atau kata kunci di subject/body. Petakan sesuai aturan berikut:
-     - REGION 1 -> PALEMBANG, MEDAN, BATAM, RAWAMANGUN, JAMBI, PADANG, PEKANBARU
-     - REGION 2 -> PONTIANAK, BALIKPAPAN, SAMARINDA, BANJARMASIN, SINGKAWANG
-     - REGION 3 -> MERUYA, BENGKULU, LAMPUNG, SERANG
-     - REGION 4 -> DENPASAR, KUPANG, BANDUNG, MATARAM, MANADO, CIREBON
-     - REGION 5 -> SEMARANG, SOLO, TEGAL, YOGYAKARTA, PURWOKERTO, KUDUS
-     - REGION 6 -> MAKASSAR, KEDIRI, JEMBER, SURABAYA, MALANG
-     - REGION 10 -> BENGKULU (Jika subject mengandung "ADV Bengkulu")
-   - Tentukan 'currency': "USD" atau "IDR". Jika tidak eksplisit, asumsikan "IDR".
-   - Identifikasi 'denomination_suggestion' (dalam lembar rupiah/dollar): Jika email menyebutkan "Denom 100" atau "Pecahan 100k", masukkan angka "100000". Jika menyebut "Denom 50k" atau "Pecahan 50rb", masukkan "50000". Masukkan sebagai angka murni (integer).
-   - Identifikasi 'total_amount' (total nilai uang murni, e.g., 100000000 untuk 100 juta).
-   - Identifikasi 'bank_tujuan' (e.g. MAYBANK, BCA, MANDIRI).
-
-4. FORMAT OUTPUT HARUS JSON MURNI TANPA MARKDOWN DAN TANPA TEKS PEMBUKA. Berikan jawaban dalam format JSON murni. Jangan tambahkan kata pengantar atau penjelasan tambahan. Fokus pada: summary, urgency_level, is_cit_order, cit_type, dan extracted_notes.
-
-CONTOH FORMAT OUTPUT (JSON):
-{
-  "summary": "Ringkasan dari email utama dan thread percakapan.",
-  "action_required": true,
-  "urgency_level": "High/Medium/Routine",
-  "suggested_tag": "CIT/ATM/Lainnya",
-  "detected_attachments": ["list_nama_file"],
-  "extracted_context": "Konteks penting dari thread reply jika ada.",
-  "suggested_folder_parent": "REGION 1",
-  "suggested_folder_child": "MEDAN",
-  "suggested_bank": "BCA",
-  "extracted_notes": "Instruksi khusus atau catatan operasional penting.",
-  "currency": "IDR",
-  "denomination_suggestion": 100000,
-  "total_amount": 100000000
-}`
-    },
-    {
-      role: "user",
-      content: `Subject: ${emailSubject || "(No Subject)"}
-
-Body (termasuk percakapan / reply thread):
-${emailBody || "(No Content)"}
-
-Daftar Lampiran (Attachments Metadata):
-${attachmentListStr}`
-    }
-  ];
+  const apiKey = process.env.NVIDIA_API_KEY || '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';
 
   try {
-    const rawContent = await getAiCompletion(messages);
-    if (!rawContent) {
-      throw new Error("Empty response returned from rotated AI services");
+    console.log("[AI Worker] Processing Parallel Multi-Model Extraction (Qwen 3.5 397B + Kimi K2.6)...");
+    
+    // Call Qwen and Kimi simultaneously
+    const [qwenData, kimiData] = await Promise.all([
+      getSummaryFromQwen(emailSubject, emailBody, attachmentListStr, apiKey),
+      getTaggingFromKimi(emailSubject, emailBody, attachmentListStr, apiKey)
+    ]);
+
+    let parsed: any = null;
+
+    if (qwenData || kimiData) {
+      parsed = {
+        ...(qwenData || {}),
+        ...(kimiData || {})
+      };
+      console.log("[AI Worker] Successfully merged parallel AI outputs.");
+    } else {
+      console.warn("[AI Worker] Both parallel models failed. Falling back to Rotator Pool...");
+      
+      const messages = [
+        {
+          role: "system",
+          content: `Anda adalah AI Asisten Operasional Ticketing dan Dispatch. Tugas Anda adalah menganalisis data email mentah (Raw Data). Format output HARUS JSON murni: summary, urgency_level, is_cit_order, cit_type, suggested_tag, suggested_folder_parent, suggested_folder_child, suggested_bank, extracted_notes, currency, denomination_suggestion, total_amount.`
+        },
+        {
+          role: "user",
+          content: `Subject: ${emailSubject || "(No Subject)"}\n\nBody:\n${emailBody || "(No Content)"}\n\nAttachments:\n${attachmentListStr}`
+        }
+      ];
+      
+      const rawContent = await getAiCompletion(messages);
+      if (rawContent) {
+        parsed = parseCleanJson(rawContent);
+      }
     }
 
-    // Parse JSON robustly
-    let cleanJson = rawContent.trim();
-    if (cleanJson.startsWith("```")) {
-      cleanJson = cleanJson.replace(/^```json\s*/i, "").replace(/```$/, "").trim();
+    if (!parsed) {
+      throw new Error("Failed to get response from Qwen/Kimi and the rotator backup.");
     }
-    const parsed = JSON.parse(cleanJson);
     
     // Ensure suggested_tag is CIT/ATM/Lainnya per instructions
     let suggestedTag = parsed.suggested_tag !== undefined ? String(parsed.suggested_tag) : "Lainnya";

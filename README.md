@@ -17,9 +17,9 @@ Dengan integrasi cerdas ini, tim operasional dapat memangkas waktu entri data ma
 
 ---
 
-## 🤖 2. Arsitektur AI & Mekanisme Rotasi Model (High Availability)
+## 🤖 2. Arsitektur AI: Split-Task & Mekanisme Rotasi Model (High Availability)
 
-Sistem ini didesain tangguh (*resilient*) menggunakan **Multi-Model AI Rotator** guna mengantisipasi kegagalan API, pemadaman jaringan, maupun kuota rate limit (HTTP 429) pada level produksi.
+Sistem ini didesain tangguh (*resilient*) menggunakan **Split-Task AI Architecture** dan didukung dengan **Multi-Model AI Rotator** guna mengantisipasi kegagalan API, pemadaman jaringan, maupun kuota rate limit (HTTP 429) pada level produksi.
 
 ```
                       +-----------------------------+
@@ -34,40 +34,51 @@ Sistem ini didesain tangguh (*resilient*) menggunakan **Multi-Model AI Rotator**
                                      |
                +---------------------+---------------------+
                |                                           |
-        [Data Harian]                               [Historical Backfill]
+         [Data Harian]                              [Historical Backfill]
                |                                           |
-               v                                           v
-    +--------------------+                     +--------------------------+
-    | MODEL UTAMA        |                     | HEAVY-DUTY MODEL         |
-    | z-ai/glm-5.2       |                     | moonshotai/kimi-k2.6     |
-    +--------------------+                     +--------------------------+
-               | (Jika Error / Limit)                      |
-               v                                           |
-    +--------------------+                                 |
-    | FAILOVER MODEL 1   |                                 |
-    | nemotron-340b      |                                 v
-    +--------------------+                     +--------------------------+
-               | (Jika Error / Limit)          |   SSE Live Log Stream    |
-               v                               |   & Progress Bar Client  |
-    +--------------------+                     +--------------------------+
-    | FAILOVER MODEL 2   |                                 |
-    | gemma-2-27b-it     |                                 v
-    +--------------------+                     +--------------------------+
-               | (Jika Semua Gagal)            |  Simpan Hasil ke Cloud   |
-               v                               |     & SQLite Ganda       |
-    +--------------------+                     +--------------------------+
-    | Rule-Based         |
-    | Regex Fallback     |
-    +--------------------+
+               | (Parallel Multi-Model Extraction)         v
+               +---------------------+            +--------------------------+
+               |                     |            | HEAVY-DUTY MODEL         |
+               v                     v            | moonshotai/kimi-k2.6     |
+      +------------------+  +------------------+  +--------------------------+
+      | DATA EXTRACTOR   |  | CONTEXTUAL TAG   |               |
+      | Qwen 3.5 (397B)  |  | Kimi K2.6        |               v
+      +------------------+  +------------------+  +--------------------------+
+               |                     |            |   SSE Live Log Stream    |
+               +----------+----------+            |   & Progress Bar Client  |
+                          | (Merge JSON Output)   +--------------------------+
+                          v                                    |
+               +---------------------+                         v
+               | Simpan ke Supabase  |            +--------------------------+
+               |   & SQLite Ganda    |            |  Simpan Hasil ke Cloud   |
+               +---------------------+            |     & SQLite Ganda       |
+                          |                       +--------------------------+
+                          | (Jika Qwen/Kimi Gagal)
+                          v
+               +---------------------+
+               |   FAILOVER POOL     |
+               | - z-ai/glm-5.2      |
+               | - nemotron-340b     |
+               | - gemma-2-27b-it    |
+               +---------------------+
+                          | (Jika Semua Gagal)
+                          v
+               +---------------------+
+               |     Rule-Based      |
+               |   Regex Fallback    |
+               +---------------------+
 ```
 
-### ⚙️ Detail Alur Kerja AI
-1. **Event-Driven Processing:** Sistem meninggalkan metode polling Cron Job konvensional yang lambat. Ketika ada email baru yang masuk, sistem secara instan memicu Worker Node.js untuk memproses analisis AI secara asinkron (menggunakan `Promise.all` untuk batch processing berkinerja tinggi).
-2. **AI Model Rotator (High Availability):**
-   * **Model Utama (`z-ai/glm-5.2`):** Dioptimalkan untuk ekstraksi cepat data harian email menjadi objek JSON operasional yang tervalidasi.
-   * **Mekanisme Failover Otomatis:** Apabila terjadi pembatasan kuota atau API sedang tidak dapat dijangkau, sistem otomatis mengalihkan *request* ke **nvidia/nemotron-340b-instruct** atau **google/gemma-2-27b-it** secara senyap tanpa menghentikan worker.
+### ⚙️ Detail Alur Kerja AI & Split-Task Processing
+1. **Event-Driven Processing:** Sistem meninggalkan metode polling Cron Job konvensional yang lambat. Ketika ada email baru yang masuk, sistem secara instan memicu Worker Node.js untuk memproses analisis AI secara asinkron.
+2. **Split-Task AI Processing (Parallel Multi-Model Extraction):**
+   * **Qwen 3.5 (397B) - Data Extractor:** Dipercaya sebagai mesin ekstraktor data utama berkat kapasitas parameternya yang sangat masif. Model ini ditugaskan secara **KHUSUS** untuk mengekstrak data operasional presisi tinggi: `summary`, `currency`, `total_amount`, dan `denomination_suggestion` serta informasi detail nominal lainnya.
+   * **Kimi K2.6 - Contextual Tagger:** Memiliki pemahaman bahasa kontekstual yang mendalam serta window context yang panjang. Model ini ditugaskan secara **KHUSUS** untuk menganalisis konteks percakapan lama (*reply thread*) serta menentukan klasifikasi `suggested_tag` (CIT/ATM/Lainnya), `urgency_level`, dan status `action_required`.
+   * **Concurrent Execution (`Promise.all`):** Kedua model AI tersebut dieksekusi secara bersamaan (paralel) dari backend untuk mencegah hambatan latency (overhead waktu) sehingga pemrosesan berlangsung sangat responsif, lalu keluarannya digabungkan (*merge*) secara rapi.
+3. **Mekanisme Failover Otomatis (High Availability):**
+   * Apabila request ke Qwen/Kimi mengalami limitasi kuota atau gangguan, sistem secara otomatis mengalihkan proses ke rotator pool yang berisi **z-ai/glm-5.2**, **nvidia/nemotron-340b-instruct**, atau **google/gemma-2-27b-it** secara transparan tanpa menghentikan worker.
    * **Rule-Based Fallback:** Sebagai pertahanan terakhir, sistem didukung algoritma parsing reguler (*Regex*) untuk mengekstrak data dasar sehingga data tetap berhasil ter-input dengan aman.
-3. **Heavy-Duty Backfill Model (`moonshotai/kimi-k2.6`):** Digunakan khusus untuk memproses pengolahan ulang ribuan data historis yang kosong di latar belakang karena memiliki jendela konteks (*long-context window*) yang sangat panjang serta kemampuan inferensi logika Bahasa Indonesia yang superior.
+4. **Heavy-Duty Backfill Model (`moonshotai/kimi-k2.6`):** Digunakan khusus untuk memproses pengolahan ulang ribuan data historis yang kosong di latar belakang secara real-time via Server-Sent Events (SSE).
 
 ---
 
