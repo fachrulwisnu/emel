@@ -39,6 +39,7 @@ import {
 import CitDashboard from './components/CitDashboard';
 import CitOrderModal from './components/CitOrderModal';
 import HtmlEmailViewer from './components/HtmlEmailViewer';
+import PlainTextTree from './components/PlainTextTree';
 import AttachmentGallery from './components/AttachmentGallery';
 
 interface Email {
@@ -709,23 +710,23 @@ export default function App() {
     setBackfillResult(null);
     try {
       addToast('Backfill Started', 'Proses Backfill dimulai di background worker...');
-      const res = await fetch('/api/emails/backfill', { method: 'POST' });
+      const res = await fetch('/api/backfill', { method: 'POST' });
       const data = await res.json();
       
       if (data.success) {
+        addToast('Backfill Running', 'Proses backfill berjalan asinkron di background. Email akan terupdate otomatis.');
+        // Let's set a state showing that background processing is active
         setBackfillResult({
-          processed: data.processed,
-          failed: data.failed,
-          skipped: data.skipped
+          processed: 0,
+          failed: 0,
+          skipped: 0
         });
-        addToast('Backfill Completed', `Backfill selesai. Sukses: ${data.processed}, Gagal: ${data.failed}, Skipped: ${data.skipped}`);
-        await loadEmails();
       } else {
         addToast('Backfill Failed', data.message || 'Gagal memicu backfill.');
       }
     } catch (err: any) {
       console.error("Gagal memicu backfill:", err);
-      addToast('Backfill Error', err.message || 'Failed to complete backfill process.');
+      addToast('Backfill Error', err.message || 'Failed to trigger backfill process.');
     } finally {
       setIsBackfilling(false);
     }
@@ -1597,8 +1598,8 @@ export default function App() {
                         <HtmlEmailViewer htmlContent={selectedEmail.html_body} />
                       </div>
                     ) : (
-                      <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-5 font-mono text-xs text-slate-700 whitespace-pre-wrap leading-relaxed min-h-[160px]">
-                        {selectedEmail.body_text}
+                      <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-5 text-xs text-slate-700 min-h-[160px]">
+                        <PlainTextTree text={selectedEmail.body_text} />
                       </div>
                     )}
 
@@ -2442,24 +2443,13 @@ export default function App() {
 
                       {backfillResult && (
                         <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl space-y-2 mt-4">
-                          <p className="font-bold text-emerald-900 flex items-center gap-1.5">
-                            <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                            Historical Backfill Completed Successfully!
+                          <p className="font-bold text-emerald-900 flex items-center gap-1.5 text-xs">
+                            <CheckCircle2 className="h-4 w-4 text-emerald-600 animate-bounce" />
+                            Proses Backfill Berhasil Dimulai di Latar Belakang!
                           </p>
-                          <div className="grid grid-cols-3 gap-3 text-center mt-2">
-                            <div className="p-2.5 bg-white border border-emerald-100 rounded-lg shadow-sm">
-                              <span className="text-[10px] text-slate-400 block font-bold uppercase">Success</span>
-                              <span className="text-lg font-bold text-emerald-700">{backfillResult.processed}</span>
-                            </div>
-                            <div className="p-2.5 bg-white border border-emerald-100 rounded-lg shadow-sm">
-                              <span className="text-[10px] text-slate-400 block font-bold uppercase">Fallback / Err</span>
-                              <span className="text-lg font-bold text-rose-600">{backfillResult.failed}</span>
-                            </div>
-                            <div className="p-2.5 bg-white border border-emerald-100 rounded-lg shadow-sm">
-                              <span className="text-[10px] text-slate-400 block font-bold uppercase">Skipped</span>
-                              <span className="text-lg font-bold text-slate-500">{backfillResult.skipped}</span>
-                            </div>
-                          </div>
+                          <p className="text-[11px] text-slate-600 leading-normal pl-5">
+                            Sistem sedang melakukan sinkronisasi asinkron secara aman dengan jeda (delay) otomatis untuk mencegah kelebihan beban API. Anda dapat terus menggunakan aplikasi, riwayat percakapan dan status email akan diperbarui secara otomatis.
+                          </p>
                         </div>
                       )}
                     </div>

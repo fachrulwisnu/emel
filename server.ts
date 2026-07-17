@@ -12,6 +12,7 @@ import {
   dbUpdateEmailFields,
   dbSaveCustomFilter,
   dbRunHistoricalBackfill,
+  runHistoricalBackfill,
   registerDbBroadcaster
 } from "./src/database-service";
 import { 
@@ -215,6 +216,21 @@ async function startServer() {
       });
     } catch (err: any) {
       console.error("[API] Historical backfill failed:", err);
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // Specific background backfill endpoint
+  app.post("/api/backfill", (req, res) => {
+    try {
+      console.log("[API] Triggering asynchronous historical backfill...");
+      runHistoricalBackfill();
+      res.json({
+        success: true,
+        message: "Backfill process started in background"
+      });
+    } catch (err: any) {
+      console.error("[API] Failed to trigger background backfill:", err);
       res.status(500).json({ success: false, message: err.message || String(err) });
     }
   });

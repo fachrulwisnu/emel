@@ -1564,6 +1564,155 @@ export async function dbRunHistoricalBackfill(): Promise<{ processedCount: numbe
 }
 
 /**
+ * Asynchronous background historical backfill function.
+ * Immediately spawns background processor and returns.
+ */
+export function runHistoricalBackfill(): void {
+  console.log("[Backfill Background] Spawning runHistoricalBackfill asynchronous worker...");
+  _runHistoricalBackfillAsync().catch((err) => {
+    console.error("[Backfill Background] Fatal error in asynchronous worker:", err);
+  });
+}
+
+/**
+ * Internal async worker for historical backfill.
+ * Grabs unsummarized emails from Supabase (or SQLite as fallback) and processes them in chunked batches of 5.
+ * Uses 3-5 second delays to avoid rate limit (Error 429).
+ */
+async function _runHistoricalBackfillAsync(): Promise<void> {
+  const supabase = getSupabaseClient();
+  let oldEmails: any[] = [];
+  if (supabase) {
+    try {
+      console.log("[Backfill Background] Fetching unsummarized historical emails from Supabase...");
+      const { data, error } = await supabase
+        .from('emails')
+        .select('message_id, subject, body_text, attachments')
+        .or('summary.is.null,ai_status.eq.PENDING');
+      
+      if (!error && data) {
+        oldEmails = data;
+      } else if (error) {
+        console.error("[Backfill Background] Supabase query error:", error);
+      }
+    } catch (err) {
+      console.error("[Backfill Background] Exception fetching from Supabase:", err);
+    }
+  }
+  
+  // If Supabase fetch was empty or not active, try SQLite
+  if (oldEmails.length === 0) {
+    console.log("[Backfill Background] Fetching from SQLite database...");
+    const db = getSqliteDb();
+    oldEmails = await new Promise((resolve, reject) => {
+      db.all(
+        "SELECT message_id, subject, body_text, attachments FROM emails WHERE summary IS NULL OR summary = '' OR summary = 'No summary generated' OR ai_status = 'PENDING'",
+        [],
+        (err, rows) => {
+          if (err) return reject(err);
+          resolve(rows || []);
+        }
+      );
+    });
+  }
+
+  console.log(`[Backfill Background] Found ${oldEmails.length} unsummarized/pending historical emails to process.`);
+  if (oldEmails.length === 0) {
+    console.log("[Backfill Background] No historical data needs backfilling.");
+    return;
+  }
+
+  const BATCH_SIZE = 5;
+  for (let i = 0; i < oldEmails.length; i += BATCH_SIZE) {
+    const batch = oldEmails.slice(i, i + BATCH_SIZE);
+    console.log(`[Backfill Background] Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(oldEmails.length / BATCH_SIZE)} (Size: ${batch.length})`);
+    
+    await Promise.all(batch.map(async (email) => {
+      const text = email.body_text || '';
+      const messageId = email.message_id;
+
+      await dbUpdateEmailFields(messageId, { ai_status: 'ANALYZING' });
+      if (dbBroadcasterFn) {
+        dbBroadcasterFn('email_analyzing', { message_id: messageId, subject: email.subject, ai_status: 'ANALYZING' });
+      }
+
+      if (!text || text.trim().length < 10) {
+        await dbUpdateEmailFields(messageId, {
+          summary: "Data historis tidak terbaca jelas",
+          action_required: false,
+          urgency_level: "Routine",
+          suggested_tag: "Informasi",
+          folder_parent: "Operation",
+          folder_child: "General",
+          is_important: false,
+          ai_status: 'COMPLETED'
+        });
+        return;
+      }
+
+      try {
+        const parsedAttachments = typeof email.attachments === 'string' 
+          ? JSON.parse(email.attachments || '[]') 
+          : (email.attachments || []);
+
+        const aiResult = await processEmailWithNvidia(email.subject || "", text, parsedAttachments);
+        if (aiResult && aiResult.summary && aiResult.summary.trim() !== "") {
+          await dbUpdateEmailFields(messageId, {
+            summary: aiResult.summary,
+            action_required: !!aiResult.action_required,
+            urgency_level: aiResult.urgency_level || "Routine",
+            suggested_tag: aiResult.suggested_tag || "Informasi",
+            folder_parent: aiResult.suggested_folder_parent || "Operation",
+            folder_child: aiResult.suggested_folder_child || "General",
+            is_important: aiResult.urgency_level === 'High' || aiResult.urgency_level === 'Peringatan',
+            is_cit_order: !!aiResult.is_cit_order,
+            cit_type: aiResult.cit_type || "None",
+            suggested_bank: aiResult.suggested_bank || "",
+            extracted_notes: aiResult.extracted_notes || "",
+            currency: aiResult.currency || "IDR",
+            denomination_suggestion: aiResult.denomination_suggestion,
+            total_amount: aiResult.total_amount,
+            ai_status: 'COMPLETED'
+          });
+        } else {
+          throw new Error("Empty summary from AI");
+        }
+      } catch (err: any) {
+        console.error(`[Backfill Background] Error processing message_id ${messageId}:`, err.message || err);
+        const fallbackInfo = ruleBasedFallback(email.subject, text);
+        await dbUpdateEmailFields(messageId, {
+          summary: fallbackInfo.summary || "Data historis tidak terbaca jelas",
+          action_required: false,
+          urgency_level: "Routine",
+          suggested_tag: "Informasi",
+          folder_parent: "Operation",
+          folder_child: "General",
+          is_important: false,
+          ai_status: 'FAILED'
+        });
+      }
+
+      // Fetch final email data to broadcast to frontend
+      const finalEmail = await dbGetEmailByMessageId(messageId);
+      if (finalEmail && dbBroadcasterFn) {
+        dbBroadcasterFn('email_updated', {
+          email: finalEmail,
+          message: `Email "${finalEmail.subject}" successfully updated by historical backfill.`
+        });
+      }
+    }));
+
+    // Wait 3-5 seconds between batches to avoid 429 rate limits of NVIDIA API
+    if (i + BATCH_SIZE < oldEmails.length) {
+      const waitTime = 3000 + Math.random() * 2000;
+      console.log(`[Backfill Background] Waiting ${(waitTime / 1000).toFixed(1)} seconds before next batch...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+  }
+  console.log("[Backfill Background] Asynchronous historical backfill completed!");
+}
+
+/**
  * Initializes postgres_changes realtime subscription for the emails table
  */
 export function initSupabaseRealtime() {
