@@ -1,5 +1,5 @@
 import { getAutoTags } from '../src/tags';
-import { dbUpsertEmail } from '../src/database-service';
+import { syncAndAnalyzeEmail } from '../src/database-service';
 
 export default async function handler(req: any, res: any) {
   try {
@@ -69,7 +69,7 @@ export default async function handler(req: any, res: any) {
 
     // Save to Database
     for (const email of fetchedEmails) {
-      await dbUpsertEmail({
+      await syncAndAnalyzeEmail({
         message_id: email.uid,
         subject: email.subject,
         sender: email.fromName ? `${email.fromName} <${email.fromAddress}>` : email.fromAddress,

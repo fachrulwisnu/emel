@@ -6,7 +6,8 @@ import {
   dbGetAllEmails, 
   dbUpsertEmail, 
   dbGetCustomFilters,
-  Email
+  Email,
+  syncAndAnalyzeEmail
 } from './database-service';
 import { triggerCitApiWorkflow } from './cit-api-service';
 
@@ -188,8 +189,8 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
             api_workflow_log: apiWorkflowLog
           };
 
-          // Save to DB (SQLite and Supabase)
-          await dbUpsertEmail(newEmail);
+          // Save to DB (SQLite and Supabase) and analyze with NVIDIA AI
+          await syncAndAnalyzeEmail(newEmail);
           addedCount++;
 
           // Broadcast to React frontend in real-time

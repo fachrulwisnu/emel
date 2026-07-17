@@ -61,6 +61,7 @@ interface Email {
   action_required?: boolean;
   suggested_tag?: string;
   is_important?: boolean;
+  urgency_level?: string;
 }
 
 interface CustomFilter {
@@ -1339,14 +1340,16 @@ export default function App() {
                         </div>
 
                         <div className={`flex-1 p-3 rounded-lg border flex items-center gap-2.5 ${
-                          selectedEmail.is_important 
+                          selectedEmail.is_important || selectedEmail.urgency_level === 'High' || selectedEmail.urgency_level === 'Peringatan'
                             ? 'bg-rose-50/70 border-rose-200 text-rose-900' 
                             : 'bg-slate-50/70 border-slate-200 text-slate-500'
                         }`}>
-                          <div className={`w-2 h-2 rounded-full ${selectedEmail.is_important ? 'bg-rose-500 animate-ping' : 'bg-slate-300'}`} />
+                          <div className={`w-2 h-2 rounded-full ${selectedEmail.is_important || selectedEmail.urgency_level === 'High' ? 'bg-rose-500 animate-ping' : 'bg-slate-300'}`} />
                           <div className="text-left">
                             <span className="text-[10px] block font-bold uppercase text-slate-400">Marking / Urgency</span>
-                            <span className="text-[11px] font-semibold">{selectedEmail.is_important ? 'Urgent / Task' : 'Routine'}</span>
+                            <span className="text-[11px] font-semibold">
+                              {selectedEmail.is_important ? 'Urgent / Task' : 'Routine'} ({selectedEmail.urgency_level || 'Routine'})
+                            </span>
                           </div>
                         </div>
                       </div>
@@ -1362,7 +1365,8 @@ export default function App() {
                             summary: selectedEmail.summary || '',
                             action_required: !!selectedEmail.action_required,
                             suggested_tag: selectedEmail.tag_type || selectedEmail.suggested_tag || 'Informasi',
-                            is_important: !!selectedEmail.is_important
+                            is_important: !!selectedEmail.is_important,
+                            urgency_level: selectedEmail.urgency_level || 'Routine'
                           }, null, 2)}
                         </pre>
                       </div>

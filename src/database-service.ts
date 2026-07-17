@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { GoogleGenAI, Type } from '@google/genai';
+import OpenAI from 'openai';
 import { classifyEmail, classifyFolder } from './sqlite-db';
 
 const SETTINGS_FILE_PATH = path.join(process.cwd(), 'app_settings.json');
@@ -31,6 +32,7 @@ export interface Email {
   action_required?: boolean;
   suggested_tag?: string;
   is_important?: boolean;
+  urgency_level?: string;
 }
 
 export interface CustomFilter {
@@ -171,6 +173,7 @@ export async function initDatabaseService(): Promise<void> {
       db.run('ALTER TABLE emails ADD COLUMN action_required INTEGER DEFAULT 0', () => {});
       db.run('ALTER TABLE emails ADD COLUMN suggested_tag TEXT', () => {});
       db.run('ALTER TABLE emails ADD COLUMN is_important INTEGER DEFAULT 0', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN urgency_level TEXT', () => {});
 
       resolve();
     });
@@ -210,7 +213,8 @@ export async function dbGetAllEmails(): Promise<Email[]> {
           summary: row.summary || '',
           action_required: row.action_required === true || row.action_required === 1,
           suggested_tag: row.suggested_tag || '',
-          is_important: row.is_important === true || row.is_important === 1
+          is_important: row.is_important === true || row.is_important === 1,
+          urgency_level: row.urgency_level || 'Routine'
         }));
       }
       console.warn('Supabase emails query failed, falling back to SQLite:', error);
@@ -255,7 +259,8 @@ export async function dbGetAllEmails(): Promise<Email[]> {
           summary: row.summary || '',
           action_required: row.action_required === 1,
           suggested_tag: row.suggested_tag || '',
-          is_important: row.is_important === 1
+          is_important: row.is_important === 1,
+          urgency_level: row.urgency_level || 'Routine'
         };
       });
       resolve(mapped);
@@ -401,6 +406,110 @@ function ruleBasedFallback(subject: string, bodyText: string): {
   };
 }
 
+/**
+ * Processes email text body using NVIDIA API and thinkingmachines/inkling model
+ */
+export async function processEmailWithNvidia(emailBody: string): Promise<{
+  summary: string;
+  action_required: boolean;
+  urgency_level: string;
+}> {
+  const apiKey = process.env.NVIDIA_API_KEY || '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';
+  const baseURL = 'https://integrate.api.nvidia.com/v1';
+
+  try {
+    const openai = new OpenAI({
+      apiKey,
+      baseURL,
+    });
+
+    const completion = await openai.chat.completions.create({
+      model: "thinkingmachines/inkling",
+      messages: [
+        {
+          role: "system",
+          content: "Anda asisten operasional. Analisis email dan berikan JSON: {summary: string, action_required: boolean, urgency_level: string}"
+        },
+        {
+          role: "user",
+          content: emailBody || "(No content)"
+        }
+      ],
+      temperature: 1,
+      top_p: 0.95,
+      max_tokens: 8192,
+      stream: false
+    });
+
+    const rawContent = completion.choices[0]?.message?.content || "";
+    if (!rawContent) {
+      throw new Error("Empty response from NVIDIA API");
+    }
+
+    // Parse JSON robustly
+    // Sometimes models wrap JSON in markdown block: ```json ... ```
+    let cleanJson = rawContent.trim();
+    if (cleanJson.startsWith("```")) {
+      cleanJson = cleanJson.replace(/^```json\s*/i, "").replace(/```$/, "").trim();
+    }
+    const parsed = JSON.parse(cleanJson);
+    return {
+      summary: parsed.summary !== undefined ? String(parsed.summary) : "",
+      action_required: parsed.action_required === true || parsed.action_required === "true",
+      urgency_level: parsed.urgency_level !== undefined ? String(parsed.urgency_level) : "Routine"
+    };
+  } catch (err: any) {
+    console.error('[AI Copilot] NVIDIA API Error:', err.message || String(err));
+    throw err;
+  }
+}
+
+/**
+ * Synchronizes and analyzes emails using NVIDIA API and saves/upserts to Supabase + SQLite
+ */
+export async function syncAndAnalyzeEmail(email: Email): Promise<void> {
+  let summary = "";
+  let action_required = false;
+  let urgency_level = "Routine";
+
+  try {
+    const aiResult = await processEmailWithNvidia(email.body_text || "");
+    summary = aiResult.summary || `Email from ${email.sender} regarding ${email.subject}.`;
+    action_required = !!aiResult.action_required;
+    urgency_level = aiResult.urgency_level || "Routine";
+
+    // 4. TAMPILAN TERMINAL:
+    // Saat AI selesai memproses email, tampilkan log:
+    // "[AI Copilot] Email processed: [Subject Email] | Category: [Hasil AI]"
+    console.log(`[AI Copilot] Email processed: ${email.subject} | Category: ${urgency_level}`);
+  } catch (err: any) {
+    // 3. ERROR HANDLING & LOGGING:
+    // Jika NVIDIA API gagal (misalnya rate limit), berikan pesan log di terminal bahwa AI sedang tidak tersedia 
+    // dan tetap masukkan email ke database dengan status action_required: false agar aplikasi tidak berhenti.
+    console.log('[AI Copilot] AI sedang tidak tersedia');
+    
+    // Fallback: rule-based summary but action_required: false
+    const fallbackInfo = ruleBasedFallback(email.subject, email.body_text || "");
+    summary = fallbackInfo.summary || `Email from ${email.sender}.`;
+    action_required = false;
+    urgency_level = "Routine";
+  }
+
+  // Combine results and ensure no undefined values are written
+  const analyzedEmail: Email = {
+    ...email,
+    summary,
+    action_required,
+    urgency_level,
+    tag_type: urgency_level,
+    suggested_tag: urgency_level,
+    is_important: urgency_level === 'High' || urgency_level === 'Peringatan'
+  };
+
+  // Upsert to SQLite and Supabase using existing robust pipeline
+  await dbUpsertEmail(analyzedEmail);
+}
+
 // Upsert Email in SQLite and Supabase with AI-driven tagging and summary analysis
 export async function dbUpsertEmail(email: Email): Promise<void> {
   // Classify dynamically if not provided
@@ -448,12 +557,13 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
   let actionRequired = email.action_required;
   let suggestedTag = email.suggested_tag;
   let isImportant = email.is_important;
+  let urgencyLevel = email.urgency_level || 'Routine';
   let tags = email.tags || [];
   let isRead = email.is_read !== undefined ? email.is_read : false;
 
   const db = getSqliteDb();
   const existing: any = await new Promise((resolve) => {
-    db.get('SELECT is_read, tag_type, summary, action_required, suggested_tag, is_important, tags FROM emails WHERE message_id = ?', [email.message_id], (err, row) => {
+    db.get('SELECT is_read, tag_type, summary, action_required, suggested_tag, is_important, tags, urgency_level FROM emails WHERE message_id = ?', [email.message_id], (err, row) => {
       resolve(row || null);
     });
   });
@@ -465,30 +575,34 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
     if (actionRequired === undefined) actionRequired = existing.action_required === 1;
     if (!suggestedTag) suggestedTag = existing.suggested_tag;
     if (isImportant === undefined) isImportant = existing.is_important === 1;
+    if (!urgencyLevel || urgencyLevel === 'Routine') urgencyLevel = existing.urgency_level || 'Routine';
     try {
       if (tags.length === 0 && existing.tags) {
         tags = JSON.parse(existing.tags);
       }
     } catch (e) {}
   } else {
-    // New email: Run AI Assistant
-    try {
-      console.log(`[AI Copilot] Processing new email with Gemini: "${email.subject}"`);
-      const aiResult = await processEmailWithAI(email.subject, email.body_text);
-      summary = aiResult.summary;
-      actionRequired = aiResult.action_required;
-      suggestedTag = aiResult.suggested_tag;
-      tagType = aiResult.suggested_tag;
-      isImportant = aiResult.is_important;
+    // New email: Run AI Assistant if not already supplied
+    if (!summary) {
+      try {
+        console.log(`[AI Copilot] Processing new email with Gemini: "${email.subject}"`);
+        const aiResult = await processEmailWithAI(email.subject, email.body_text);
+        summary = aiResult.summary;
+        actionRequired = aiResult.action_required;
+        suggestedTag = aiResult.suggested_tag;
+        tagType = aiResult.suggested_tag;
+        isImportant = aiResult.is_important;
+        urgencyLevel = aiResult.suggested_tag === 'Penugasan' ? 'High' : (aiResult.is_important ? 'Medium' : 'Routine');
 
-      // Tag backfilling: Jika mengandung instruksi mendesak atau penugasan, berikan label khusus 'Urgent/Task' pada tags
-      if (isImportant || suggestedTag === 'Penugasan') {
-        if (!tags.includes('Urgent/Task')) {
-          tags = [...tags.filter(t => t !== 'Other'), 'Urgent/Task'];
+        // Tag backfilling: Jika mengandung instruksi mendesak atau penugasan, berikan label khusus 'Urgent/Task' pada tags
+        if (isImportant || suggestedTag === 'Penugasan') {
+          if (!tags.includes('Urgent/Task')) {
+            tags = [...tags.filter(t => t !== 'Other'), 'Urgent/Task'];
+          }
         }
+      } catch (aiErr) {
+        console.error('[AI Copilot] Error analyzing new email:', aiErr);
       }
-    } catch (aiErr) {
-      console.error('[AI Copilot] Error analyzing new email:', aiErr);
     }
   }
 
@@ -509,9 +623,9 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
       INSERT INTO emails (
         message_id, subject, sender, receiver, date, body_text, html_body, tags, 
         category, sub_category, folder_parent, folder_child, api_workflow_status, api_workflow_log,
-        is_read, tag_type, summary, action_required, suggested_tag, is_important
+        is_read, tag_type, summary, action_required, suggested_tag, is_important, urgency_level
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(message_id) DO UPDATE SET
         subject = excluded.subject,
         sender = excluded.sender,
@@ -531,7 +645,8 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
         summary = excluded.summary,
         action_required = excluded.action_required,
         suggested_tag = excluded.suggested_tag,
-        is_important = excluded.is_important
+        is_important = excluded.is_important,
+        urgency_level = excluded.urgency_level
       `,
       [
         normalizedEmail.message_id,
@@ -553,7 +668,8 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
         summary || null,
         actionRequired ? 1 : 0,
         suggestedTag || null,
-        isImportant ? 1 : 0
+        isImportant ? 1 : 0,
+        urgencyLevel || null
       ],
       (err) => {
         if (err) return reject(err);
@@ -597,7 +713,8 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
         summary: summary || null,
         action_required: actionRequired,
         suggested_tag: suggestedTag || null,
-        is_important: isImportant
+        is_important: isImportant,
+        urgency_level: urgencyLevel || null
       };
 
       const { error } = await supabase.from('emails').upsert(payload, { onConflict: 'message_id' });
