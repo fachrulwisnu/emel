@@ -74,6 +74,17 @@ Sistem ini berjalan secara berkesinambungan melalui interaksi komponen-komponen 
 ## 🚀 Fitur Utama
 
 * **AI Operational Assistant Copilot:** Menganalisis subjek dan isi email secara instan untuk mendeteksi tindakan yang diperlukan, menyusun ringkasan (summary) cerdas dalam Bahasa Indonesia, serta memberikan label urgensi tinggi/sedang/rendah secara real-time.
+* **Deteksi CIT/ATM Otomatis:** AI secara cerdas mengenali pesanan operasional (Cash In Transit / ATM Cash Load) jika email berisi kata kunci seperti `"CIT", "ATM", "Setor", "Bon", "Delivery", "Geser Vault"` dan menandai bendera `is_cit_order` menjadi true.
+* **Sistem Routing Wilayah & Cabang:** Penentuan folder Regional (`suggested_folder_parent`) dan Cabang (`suggested_folder_child`) secara presisi berdasarkan domain pengirim atau subjek:
+  * **REGION 1**: PALEMBANG, MEDAN, BATAM, RAWAMANGUN, JAMBI, PADANG, PEKANBARU
+  * **REGION 2**: PONTIANAK, BALIKPAPAN, SAMARINDA, BANJARMASIN, SINGKAWANG
+  * **REGION 3**: MERUYA, BENGKULU, LAMPUNG, SERANG
+  * **REGION 4**: DENPASAR, KUPANG, BANDUNG, MATARAM, MANADO, CIREBON
+  * **REGION 5**: SEMARANG, SOLO, TEGAL, YOGYAKARTA, PURWOKERTO, KUDUS
+  * **REGION 6**: MAKASSAR, KEDIRI, JEMBER, SURABAYA, MALANG
+  * **REGION 10**: BENGKULU (Khusus subject berisi `"ADV Bengkulu"`)
+* **Integrasi ActiveATM CIT API:** Antarmuka khusus untuk berinteraksi langsung dengan ActiveATM API (`https://api-activeatm.adv.my.id`) melalui proxy server backend yang aman untuk mengambil jenis mata uang, unit kas, master entitas cabang, serta status perjalanan trip.
+* **Form Order & Auto-Fill Satu-Klik:** Tombol "Create Order CIT" langsung di panel samping Copilot yang secara otomatis memindahkan rincian email, nomor referensi, target cabang, jenis order, dan nilai estimasi uang tunai ke dalam formulir pembuatan trip baru.
 * **Integrasi NVIDIA AI Chat Completion:** Menghubungkan library `openai` resmi dengan endpoint NVIDIA (`https://integrate.api.nvidia.com/v1`) secara stabil dan aman menggunakan variabel lingkungan.
 * **POP3 Client Integration:** Mendukung pengambilan email real-time menggunakan modul POP3 client yang dapat dikustomisasi parameternya di halaman pengaturan.
 * **Filter Dinamis & Pemindaian Retroaktif:** Pengguna dapat membuat aturan filter berbasis kata kunci atau kondisi pengirim, serta menjalankannya secara retroaktif untuk mengelompokkan ribuan email yang sudah tersimpan sebelumnya.
@@ -85,9 +96,10 @@ Sistem ini berjalan secara berkesinambungan melalui interaksi komponen-komponen 
 ## 🛠️ Stack Teknologi
 
 * **Frontend:** React 18, Vite, Tailwind CSS, Lucide Icons, Framer Motion (untuk animasi transisi antarmuka).
-* **Backend:** Node.js Express Server, tsx, esbuild.
+* **Backend:** Node.js Express Server, tsx, esbuild, Axios Proxy API.
 * **Database:** SQLite (penyimpanan lokal cepat) & Supabase Client (untuk singkronisasi cloud).
 * **AI Integrasi:** SDK `openai` resmi dikonfigurasi menggunakan endpoint NVIDIA API dan model `thinkingmachines/inkling`.
+* **API Eksternal:** Layanan API ActiveATM (`https://api-activeatm.adv.my.id`) untuk pembuatan dan pelacakan order CIT/ATM.
 
 ---
 

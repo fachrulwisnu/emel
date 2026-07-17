@@ -31,8 +31,10 @@ import {
   Zap,
   ChevronUp,
   Sparkles,
-  History
+  History,
+  Coins
 } from 'lucide-react';
+import CitDashboard from './components/CitDashboard';
 
 interface Email {
   id?: number;
@@ -63,6 +65,8 @@ interface Email {
   suggested_tag?: string;
   is_important?: boolean;
   urgency_level?: string;
+  is_cit_order?: boolean;
+  cit_type?: string;
 }
 
 interface CustomFilter {
@@ -111,8 +115,9 @@ const getTagBadgeStyle = (str: string) => {
 
 export default function App() {
   // Navigation
-  const [currentMenu, setCurrentMenu] = useState<'inbox' | 'settings'>('inbox');
+  const [currentMenu, setCurrentMenu] = useState<'inbox' | 'settings' | 'cit-dashboard'>('inbox');
   const [settingsTab, setSettingsTab] = useState<'filters' | 'api' | 'mail' | 'backfill'>('filters');
+  const [prefillEmail, setPrefillEmail] = useState<Email | null>(null);
 
   // Loaders and State
   const [tickets, setTickets] = useState<Email[]>([]);
@@ -1061,6 +1066,22 @@ export default function App() {
             </span>
           </button>
 
+          {/* CIT Dispatch Dashboard button */}
+          <button 
+            onClick={() => setCurrentMenu('cit-dashboard')}
+            className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
+              currentMenu === 'cit-dashboard' 
+                ? 'bg-slate-800 text-blue-400 font-bold' 
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+            }`}
+            title="CIT Dashboard"
+          >
+            <Coins className="h-5.5 w-5.5" />
+            <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
+              CIT Dispatch Control
+            </span>
+          </button>
+
           {/* Settings Nav button */}
           <button 
             onClick={() => setCurrentMenu('settings')}
@@ -1590,6 +1611,20 @@ export default function App() {
                             </span>
                           </div>
                         </div>
+
+                        <div className="mt-4 pt-3.5 border-t border-slate-100 flex items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPrefillEmail(selectedEmail);
+                              setCurrentMenu('cit-dashboard');
+                            }}
+                            className="flex-1 py-2.5 px-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold rounded-xl text-center cursor-pointer flex items-center justify-center gap-2 shadow-md shadow-blue-500/10 transition-all text-xs"
+                          >
+                            <Coins className="h-4 w-4 text-white" />
+                            <span>Create Order CIT 💰 (Auto-fill Form)</span>
+                          </button>
+                        </div>
                       </div>
                     )}
 
@@ -1620,6 +1655,15 @@ export default function App() {
             </section>
 
           </div>
+        )}
+
+        {/* CIT DASHBOARD SECTION */}
+        {currentMenu === 'cit-dashboard' && (
+          <CitDashboard 
+            onAddToast={addToast}
+            prefillEmail={prefillEmail}
+            onClearPrefill={() => setPrefillEmail(null)}
+          />
         )}
 
         {/* 4. SETTINGS SECTION */}

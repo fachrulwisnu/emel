@@ -35,6 +35,8 @@ export interface Email {
   urgency_level?: string;
   suggested_folder_parent?: string;
   suggested_folder_child?: string;
+  is_cit_order?: boolean;
+  cit_type?: string;
 }
 
 export interface CustomFilter {
@@ -178,6 +180,8 @@ export async function initDatabaseService(): Promise<void> {
       db.run('ALTER TABLE emails ADD COLUMN urgency_level TEXT', () => {});
       db.run('ALTER TABLE emails ADD COLUMN suggested_folder_parent TEXT', () => {});
       db.run('ALTER TABLE emails ADD COLUMN suggested_folder_child TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN is_cit_order INTEGER DEFAULT 0', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN cit_type TEXT', () => {});
 
       resolve();
     });
@@ -220,7 +224,9 @@ export async function dbGetAllEmails(): Promise<Email[]> {
           is_important: row.is_important === true || row.is_important === 1,
           urgency_level: row.urgency_level || 'Routine',
           suggested_folder_parent: row.suggested_folder_parent || '',
-          suggested_folder_child: row.suggested_folder_child || ''
+          suggested_folder_child: row.suggested_folder_child || '',
+          is_cit_order: row.is_cit_order === true || row.is_cit_order === 1,
+          cit_type: row.cit_type || 'None'
         }));
       }
       console.warn('Supabase emails query failed, falling back to SQLite:', error);
@@ -268,7 +274,9 @@ export async function dbGetAllEmails(): Promise<Email[]> {
           is_important: row.is_important === 1,
           urgency_level: row.urgency_level || 'Routine',
           suggested_folder_parent: row.suggested_folder_parent || '',
-          suggested_folder_child: row.suggested_folder_child || ''
+          suggested_folder_child: row.suggested_folder_child || '',
+          is_cit_order: row.is_cit_order === 1,
+          cit_type: row.cit_type || 'None'
         };
       });
       resolve(mapped);
@@ -424,6 +432,8 @@ export async function processEmailWithNvidia(emailSubject: string, emailBody: st
   suggested_tag: string;
   suggested_folder_parent: string;
   suggested_folder_child: string;
+  is_cit_order: boolean;
+  cit_type: string;
 }> {
   const apiKey = process.env.NVIDIA_API_KEY || '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';
   const baseURL = 'https://integrate.api.nvidia.com/v1';
@@ -439,30 +449,44 @@ export async function processEmailWithNvidia(emailSubject: string, emailBody: st
       messages: [
         {
           role: "system",
-          content: `Anda adalah AI Asisten Operasional untuk sistem "Workflow Email Ticketing". Tugas Anda adalah menganalisis setiap email masuk dan mengubahnya menjadi data terstruktur untuk database kami.
+          content: `Anda adalah AI Asisten Operasional Ticketing. Tugas utama Anda adalah menganalisis email masuk, memberikan ringkasan, mendeteksi pesanan operasional (CIT/ATM), dan merutekan email tersebut ke Folder Region dan Branch yang tepat.
 
-Instruksi Analisis:
-1. Analisis konten email (subject dan body) secara mendalam.
-2. Tentukan hal-hal berikut:
-   - Summary: Ringkasan inti email dalam 1-2 kalimat (bahasa Indonesia).
-   - Action_required: Boolean (true jika email mengandung instruksi, permintaan, atau tugas; false jika hanya informasi).
-   - Urgency_level: Klasifikasi menjadi "High", "Medium", atau "Low" berdasarkan konten instruksi/tenggat waktu.
-   - Suggested_tag: Berikan tag/kategori yang paling relevan (Contoh: "Penugasan", "Informasi", "Geofence", "Rekap", "Update Data", "Collection").
-   - Suggested_folder_parent: Nama folder induk yang disarankan (contoh: "Bank Maybank", "Operation", "Bank Mandiri").
-   - Suggested_folder_child: Nama folder anak yang disarankan (contoh: "Collection", "General", "Disbursement").
+INSTRUKSI ANALISIS DASAR:
+1. Analisis 'subject' dan 'body_text' secara mendalam.
+2. Tentukan 'summary' (ringkasan 1-2 kalimat bahasa Indonesia).
+3. Tentukan 'action_required' (true jika email mengandung instruksi/tugas, false jika hanya notifikasi/rutin).
+4. Tentukan 'urgency_level' ("High", "Medium", "Low", atau "Routine").
 
-Format Output:
-- Anda WAJIB memberikan jawaban dalam format JSON MURNI tanpa teks pembuka, tanpa penjelasan, dan tanpa markdown (tidak boleh ada \`\`\`json ... \`\`\`).
-- Pastikan formatnya selalu valid untuk di-parse oleh JSON.parse().
+INSTRUKSI DETEKSI CIT/ATM:
+Jika email mengandung kata kunci: "CIT", "ATM", "Setor", "Bon", "Delivery", atau "Geser Vault":
+- Set "is_cit_order": true
+- Set "cit_type": "CIT" atau "ATM" (pilih yang paling relevan dengan isi email).
+- Set "suggested_tag": "CIT Order" atau "ATM Order".
+- Jika tidak terdeteksi, set "is_cit_order": false, "cit_type": "None", dan berikan "suggested_tag" yang umum.
 
-Contoh Output:
+INSTRUKSI ROUTING (SUGGESTED FOLDER):
+Tentukan 'suggested_folder_parent' (REGION) dan 'suggested_folder_child' (BRANCH) berdasarkan domain/alamat pengirim (sender) atau kata kunci di subject/body. Petakan sesuai aturan berikut:
+
+- REGION 1 -> PALEMBANG, MEDAN, BATAM, RAWAMANGUN, JAMBI, PADANG, PEKANBARU
+- REGION 2 -> PONTIANAK, BALIKPAPAN, SAMARINDA, BANJARMASIN, SINGKAWANG
+- REGION 3 -> MERUYA, BENGKULU, LAMPUNG, SERANG
+- REGION 4 -> DENPASAR, KUPANG, BANDUNG, MATARAM, MANADO, CIREBON
+- REGION 5 -> SEMARANG, SOLO, TEGAL, YOGYAKARTA, PURWOKERTO, KUDUS
+- REGION 6 -> MAKASSAR, KEDIRI, JEMBER, SURABAYA, MANADO, MALANG
+- REGION 10 -> BENGKULU (Jika subject mengandung "ADV Bengkulu")
+
+*PENTING: FORMAT OUTPUT HARUS JSON MURNI TANPA MARKDOWN DAN TANPA TEKS PEMBUKA.*
+
+CONTOH OUTPUT YANG DIHARAPKAN:
 {
-  "summary": "Permintaan droping tunai untuk PT Djarum tanggal 20 Juli 2026.",
+  "summary": "Permintaan bon CIT dan Setor Uang ATM Reguler SLA Medan tanggal 20 Juli 2026.",
   "action_required": true,
   "urgency_level": "High",
-  "suggested_tag": "Collection",
-  "suggested_folder_parent": "Bank Maybank",
-  "suggested_folder_child": "Collection"
+  "suggested_tag": "CIT Order",
+  "is_cit_order": true,
+  "cit_type": "CIT",
+  "suggested_folder_parent": "REGION 1",
+  "suggested_folder_child": "MEDAN"
 }`
         },
         {
@@ -493,7 +517,9 @@ Contoh Output:
       urgency_level: parsed.urgency_level !== undefined ? String(parsed.urgency_level) : "Routine",
       suggested_tag: parsed.suggested_tag !== undefined ? String(parsed.suggested_tag) : "Informasi",
       suggested_folder_parent: parsed.suggested_folder_parent !== undefined ? String(parsed.suggested_folder_parent) : "Operation",
-      suggested_folder_child: parsed.suggested_folder_child !== undefined ? String(parsed.suggested_folder_child) : "General"
+      suggested_folder_child: parsed.suggested_folder_child !== undefined ? String(parsed.suggested_folder_child) : "General",
+      is_cit_order: parsed.is_cit_order === true || parsed.is_cit_order === "true",
+      cit_type: parsed.cit_type !== undefined ? String(parsed.cit_type) : "None"
     };
   } catch (err: any) {
     console.error('[AI Copilot] NVIDIA API Error:', err.message || String(err));
@@ -511,6 +537,8 @@ export async function syncAndAnalyzeEmail(email: Email): Promise<void> {
   let suggested_tag = "Informasi";
   let suggested_folder_parent = "Operation";
   let suggested_folder_child = "General";
+  let is_cit_order = false;
+  let cit_type = "None";
 
   try {
     const aiResult = await processEmailWithNvidia(email.subject || "", email.body_text || "");
@@ -520,6 +548,8 @@ export async function syncAndAnalyzeEmail(email: Email): Promise<void> {
     suggested_tag = aiResult.suggested_tag || "Informasi";
     suggested_folder_parent = aiResult.suggested_folder_parent || "Operation";
     suggested_folder_child = aiResult.suggested_folder_child || "General";
+    is_cit_order = !!aiResult.is_cit_order;
+    cit_type = aiResult.cit_type || "None";
 
     // 4. TAMPILAN TERMINAL:
     // Saat AI selesai memproses email, tampilkan log:
@@ -539,6 +569,8 @@ export async function syncAndAnalyzeEmail(email: Email): Promise<void> {
     suggested_tag = "Informasi";
     suggested_folder_parent = "Operation";
     suggested_folder_child = "General";
+    is_cit_order = false;
+    cit_type = "None";
   }
 
   // Combine results and ensure no undefined values are written
@@ -551,6 +583,8 @@ export async function syncAndAnalyzeEmail(email: Email): Promise<void> {
     suggested_tag,
     suggested_folder_parent,
     suggested_folder_child,
+    is_cit_order,
+    cit_type,
     is_important: urgency_level === 'High' || urgency_level === 'Peringatan'
   };
 
@@ -608,12 +642,14 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
   let urgencyLevel = email.urgency_level || 'Routine';
   let suggestedFolderParent = email.suggested_folder_parent;
   let suggestedFolderChild = email.suggested_folder_child;
+  let isCitOrder = email.is_cit_order;
+  let citType = email.cit_type;
   let tags = email.tags || [];
   let isRead = email.is_read !== undefined ? email.is_read : false;
 
   const db = getSqliteDb();
   const existing: any = await new Promise((resolve) => {
-    db.get('SELECT is_read, tag_type, summary, action_required, suggested_tag, is_important, tags, urgency_level, suggested_folder_parent, suggested_folder_child FROM emails WHERE message_id = ?', [email.message_id], (err, row) => {
+    db.get('SELECT is_read, tag_type, summary, action_required, suggested_tag, is_important, tags, urgency_level, suggested_folder_parent, suggested_folder_child, is_cit_order, cit_type FROM emails WHERE message_id = ?', [email.message_id], (err, row) => {
       resolve(row || null);
     });
   });
@@ -628,6 +664,8 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
     if (!urgencyLevel || urgencyLevel === 'Routine') urgencyLevel = existing.urgency_level || 'Routine';
     if (!suggestedFolderParent) suggestedFolderParent = existing.suggested_folder_parent;
     if (!suggestedFolderChild) suggestedFolderChild = existing.suggested_folder_child;
+    if (isCitOrder === undefined) isCitOrder = existing.is_cit_order === 1;
+    if (!citType) citType = existing.cit_type;
     try {
       if (tags.length === 0 && existing.tags) {
         tags = JSON.parse(existing.tags);
@@ -676,9 +714,9 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
         message_id, subject, sender, receiver, date, body_text, html_body, tags, 
         category, sub_category, folder_parent, folder_child, api_workflow_status, api_workflow_log,
         is_read, tag_type, summary, action_required, suggested_tag, is_important, urgency_level,
-        suggested_folder_parent, suggested_folder_child
+        suggested_folder_parent, suggested_folder_child, is_cit_order, cit_type
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(message_id) DO UPDATE SET
         subject = excluded.subject,
         sender = excluded.sender,
@@ -701,7 +739,9 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
         is_important = excluded.is_important,
         urgency_level = excluded.urgency_level,
         suggested_folder_parent = excluded.suggested_folder_parent,
-        suggested_folder_child = excluded.suggested_folder_child
+        suggested_folder_child = excluded.suggested_folder_child,
+        is_cit_order = excluded.is_cit_order,
+        cit_type = excluded.cit_type
       `,
       [
         normalizedEmail.message_id,
@@ -726,7 +766,9 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
         isImportant ? 1 : 0,
         urgencyLevel || null,
         suggestedFolderParent || null,
-        suggestedFolderChild || null
+        suggestedFolderChild || null,
+        isCitOrder ? 1 : 0,
+        citType || 'None'
       ],
       (err) => {
         if (err) return reject(err);
@@ -773,7 +815,9 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
         is_important: isImportant,
         urgency_level: urgencyLevel || null,
         suggested_folder_parent: suggestedFolderParent || null,
-        suggested_folder_child: suggestedFolderChild || null
+        suggested_folder_child: suggestedFolderChild || null,
+        is_cit_order: isCitOrder,
+        cit_type: citType || 'None'
       };
 
       const { error } = await supabase.from('emails').upsert(payload, { onConflict: 'message_id' });
@@ -1017,6 +1061,8 @@ export async function dbUpdateEmailFields(
     suggested_tag?: string;
     summary?: string;
     action_required?: boolean;
+    is_cit_order?: boolean;
+    cit_type?: string;
   }
 ): Promise<void> {
   // SQLite update
@@ -1032,6 +1078,8 @@ export async function dbUpdateEmailFields(
   if (fields.suggested_tag !== undefined) { sets.push('suggested_tag = ?'); params.push(fields.suggested_tag); sets.push('tag_type = ?'); params.push(fields.suggested_tag); }
   if (fields.summary !== undefined) { sets.push('summary = ?'); params.push(fields.summary); }
   if (fields.action_required !== undefined) { sets.push('action_required = ?'); params.push(fields.action_required ? 1 : 0); }
+  if (fields.is_cit_order !== undefined) { sets.push('is_cit_order = ?'); params.push(fields.is_cit_order ? 1 : 0); }
+  if (fields.cit_type !== undefined) { sets.push('cit_type = ?'); params.push(fields.cit_type); }
   
   if (sets.length > 0) {
     params.push(message_id);
@@ -1059,6 +1107,8 @@ export async function dbUpdateEmailFields(
       }
       if (fields.summary !== undefined) updatePayload.summary = fields.summary;
       if (fields.action_required !== undefined) updatePayload.action_required = fields.action_required;
+      if (fields.is_cit_order !== undefined) updatePayload.is_cit_order = fields.is_cit_order;
+      if (fields.cit_type !== undefined) updatePayload.cit_type = fields.cit_type;
       
       if (Object.keys(updatePayload).length > 0) {
         const { error } = await supabase
