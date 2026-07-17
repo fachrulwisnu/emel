@@ -7,7 +7,10 @@ import {
   saveAppSettings, 
   dbGetAllEmails, 
   dbClearEmails,
-  dbMarkEmailAsRead
+  dbMarkEmailAsRead,
+  dbUpdateEmailFields,
+  dbSaveCustomFilter,
+  dbRunHistoricalBackfill
 } from "./src/database-service";
 import { 
   performBackgroundSync, 
@@ -120,6 +123,78 @@ async function startServer() {
       await dbMarkEmailAsRead(message_id, is_read);
       res.json({ success: true });
     } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // Apply AI Suggestion and folder mapping ("Smart Apply")
+  app.post("/api/emails/smart-apply", async (req, res) => {
+    try {
+      const { 
+        message_id, 
+        folder_parent, 
+        folder_child, 
+        tags, 
+        suggested_tag,
+        is_important,
+        urgency_level,
+        summary,
+        action_required,
+        create_filter_rule,
+        filter_rule
+      } = req.body;
+
+      if (!message_id) {
+        return res.status(400).json({ success: false, message: "Missing message_id" });
+      }
+
+      // 1. Update the email's details in SQLite and Supabase
+      await dbUpdateEmailFields(message_id, {
+        folder_parent: folder_parent || 'Operation',
+        folder_child: folder_child || 'General',
+        tags: tags || [],
+        suggested_tag: suggested_tag,
+        is_important: is_important,
+        urgency_level: urgency_level,
+        summary: summary,
+        action_required: action_required
+      });
+
+      // 2. (Opsional) Langsung buat Filter Rule baru dari suggestion ini jika diaktifkan
+      if (create_filter_rule && filter_rule) {
+        await dbSaveCustomFilter({
+          name: filter_rule.name || `Rule for ${folder_child || 'General'}`,
+          match_from: filter_rule.match_from || '',
+          match_subject: filter_rule.match_subject || '',
+          match_body: filter_rule.match_body || '',
+          action_parent: folder_parent || 'Operation',
+          action_child: folder_child || 'General',
+          trigger_api: !!filter_rule.trigger_api
+        });
+      }
+
+      res.json({ success: true, message: "Suggestion applied successfully" });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // Historical Data Backfill Trigger
+  app.post("/api/emails/backfill", async (req, res) => {
+    try {
+      console.log("[API] Starting historical data backfill...");
+      // Runs the backfill async or sync. Let's run it synchronously for the response since the user asked to wait/trigger,
+      // or we can run it and return the counts. Let's do a sync await as we added a limit and tiny delay.
+      const result = await dbRunHistoricalBackfill();
+      res.json({ 
+        success: true, 
+        message: "Historical backfill processed successfully", 
+        processed: result.processedCount,
+        failed: result.failedCount,
+        skipped: result.skippedCount
+      });
+    } catch (err: any) {
+      console.error("[API] Historical backfill failed:", err);
       res.status(500).json({ success: false, message: err.message || String(err) });
     }
   });

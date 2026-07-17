@@ -30,7 +30,8 @@ import {
   Check,
   Zap,
   ChevronUp,
-  Sparkles
+  Sparkles,
+  History
 } from 'lucide-react';
 
 interface Email {
@@ -111,7 +112,7 @@ const getTagBadgeStyle = (str: string) => {
 export default function App() {
   // Navigation
   const [currentMenu, setCurrentMenu] = useState<'inbox' | 'settings'>('inbox');
-  const [settingsTab, setSettingsTab] = useState<'filters' | 'api' | 'mail'>('filters');
+  const [settingsTab, setSettingsTab] = useState<'filters' | 'api' | 'mail' | 'backfill'>('filters');
 
   // Loaders and State
   const [tickets, setTickets] = useState<Email[]>([]);
@@ -153,12 +154,90 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState<string | null>(null);
   const [isTestingConn, setIsTestingConn] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [isBackfilling, setIsBackfilling] = useState(false);
+  const [backfillResult, setBackfillResult] = useState<{ processed: number; failed: number; skipped: number } | null>(null);
 
   // Floating Toasts
   const [toasts, setToasts] = useState<{ id: number; title: string; message: string }[]>([]);
 
   // Simple search filter state
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Smart Apply and Edit Suggestion Modal State
+  const [isEditSuggestionOpen, setIsEditSuggestionOpen] = useState(false);
+  const [suggestionForm, setSuggestionForm] = useState({
+    message_id: '',
+    folder_parent: '',
+    folder_child: '',
+    suggested_tag: '',
+    urgency_level: 'Routine',
+    is_important: false,
+    summary: '',
+    action_required: false,
+    create_filter_rule: false,
+    filter_rule_name: '',
+    filter_rule_match_from: '',
+    filter_rule_match_subject: '',
+    filter_rule_match_body: '',
+    filter_rule_trigger_api: false
+  });
+
+  const handleSmartApply = async (
+    emailId: string, 
+    payload: {
+      folder_parent: string;
+      folder_child: string;
+      tags: string[];
+      suggested_tag: string;
+      is_important: boolean;
+      urgency_level: string;
+      summary: string;
+      action_required: boolean;
+      create_filter_rule: boolean;
+      filter_rule?: {
+        name: string;
+        match_from: string;
+        match_subject: string;
+        match_body: string;
+        action_parent: string;
+        action_child: string;
+        trigger_api: boolean;
+      }
+    }
+  ) => {
+    try {
+      const response = await fetch('/api/emails/smart-apply', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          message_id: emailId,
+          folder_parent: payload.folder_parent,
+          folder_child: payload.folder_child,
+          tags: payload.tags,
+          suggested_tag: payload.suggested_tag,
+          is_important: payload.is_important,
+          urgency_level: payload.urgency_level,
+          summary: payload.summary,
+          action_required: payload.action_required,
+          create_filter_rule: payload.create_filter_rule,
+          filter_rule: payload.filter_rule
+        })
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        addToast('Smart Apply Successful', `Suggestion applied successfully. Email routed to ${payload.folder_parent} / ${payload.folder_child}.`);
+        await loadEmails();
+      } else {
+        addToast('Smart Apply Failed', data.message || 'Unknown error occurred.');
+      }
+    } catch (err: any) {
+      console.error('Failed to apply suggestion:', err);
+      addToast('Error', err.message || 'Failed to apply AI suggestion.');
+    }
+  };
 
   const addToast = (title: string, message: string) => {
     const id = Date.now();
@@ -539,6 +618,36 @@ export default function App() {
       });
     } finally {
       setIsTestingConn(false);
+    }
+  };
+
+  // Historical Backfill Trigger
+  const handleFetchHistoricalData = async () => {
+    if (!confirm("Proses ini akan merangkum ribuan email lama. Yakin ingin melanjutkan?")) return;
+
+    setIsBackfilling(true);
+    setBackfillResult(null);
+    try {
+      addToast('Backfill Started', 'Proses Backfill dimulai di background worker...');
+      const res = await fetch('/api/emails/backfill', { method: 'POST' });
+      const data = await res.json();
+      
+      if (data.success) {
+        setBackfillResult({
+          processed: data.processed,
+          failed: data.failed,
+          skipped: data.skipped
+        });
+        addToast('Backfill Completed', `Backfill selesai. Sukses: ${data.processed}, Gagal: ${data.failed}, Skipped: ${data.skipped}`);
+        await loadEmails();
+      } else {
+        addToast('Backfill Failed', data.message || 'Gagal memicu backfill.');
+      }
+    } catch (err: any) {
+      console.error("Gagal memicu backfill:", err);
+      addToast('Backfill Error', err.message || 'Failed to complete backfill process.');
+    } finally {
+      setIsBackfilling(false);
     }
   };
 
@@ -1364,11 +1473,63 @@ export default function App() {
                           {JSON.stringify({
                             summary: selectedEmail.summary || '',
                             action_required: !!selectedEmail.action_required,
+                            urgency_level: selectedEmail.urgency_level || 'Routine',
                             suggested_tag: selectedEmail.tag_type || selectedEmail.suggested_tag || 'Informasi',
-                            is_important: !!selectedEmail.is_important,
-                            urgency_level: selectedEmail.urgency_level || 'Routine'
+                            suggested_folder_parent: selectedEmail.suggested_folder_parent || 'Operation',
+                            suggested_folder_child: selectedEmail.suggested_folder_child || 'General'
                           }, null, 2)}
                         </pre>
+
+                        {/* Integration Action Buttons */}
+                        <div className="mt-3.5 pt-3.5 border-t border-slate-800/60 flex items-center justify-between gap-3 font-sans">
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const payload = {
+                                folder_parent: selectedEmail.suggested_folder_parent || selectedEmail.folder_parent || 'Operation',
+                                folder_child: selectedEmail.suggested_folder_child || selectedEmail.folder_child || 'General',
+                                tags: [selectedEmail.tag_type || selectedEmail.suggested_tag || 'Informasi'],
+                                suggested_tag: selectedEmail.tag_type || selectedEmail.suggested_tag || 'Informasi',
+                                is_important: !!selectedEmail.is_important,
+                                urgency_level: selectedEmail.urgency_level || 'Routine',
+                                summary: selectedEmail.summary || '',
+                                action_required: !!selectedEmail.action_required,
+                                create_filter_rule: false
+                              };
+                              await handleSmartApply(selectedEmail.message_id, payload);
+                            }}
+                            className="flex-1 py-2 px-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold rounded-lg text-center cursor-pointer flex items-center justify-center gap-1.5 shadow-sm transition-all"
+                          >
+                            <Sparkles className="h-3.5 w-3.5" />
+                            <span>Smart Apply</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSuggestionForm({
+                                message_id: selectedEmail.message_id,
+                                folder_parent: selectedEmail.suggested_folder_parent || selectedEmail.folder_parent || 'Operation',
+                                folder_child: selectedEmail.suggested_folder_child || selectedEmail.folder_child || 'General',
+                                suggested_tag: selectedEmail.tag_type || selectedEmail.suggested_tag || 'Informasi',
+                                urgency_level: selectedEmail.urgency_level || 'Routine',
+                                is_important: !!selectedEmail.is_important,
+                                summary: selectedEmail.summary || '',
+                                action_required: !!selectedEmail.action_required,
+                                create_filter_rule: false,
+                                filter_rule_name: `Rule: ${selectedEmail.fromName || 'Sender'} Routing`,
+                                filter_rule_match_from: selectedEmail.fromAddress || '',
+                                filter_rule_match_subject: '',
+                                filter_rule_match_body: '',
+                                filter_rule_trigger_api: false
+                              });
+                              setIsEditSuggestionOpen(true);
+                            }}
+                            className="py-2 px-3.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 hover:border-slate-600 font-bold rounded-lg text-center cursor-pointer transition-all"
+                          >
+                            Edit Suggestion
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1504,6 +1665,18 @@ export default function App() {
                 >
                   <Server className="h-4 w-4" />
                   <span>Mail & DB Config</span>
+                </button>
+
+                <button
+                  onClick={() => setSettingsTab('backfill')}
+                  className={`w-full flex items-center space-x-2 px-3 py-2.5 rounded-lg transition-all text-left font-semibold cursor-pointer ${
+                    settingsTab === 'backfill' 
+                      ? 'bg-blue-50 text-blue-700' 
+                      : 'text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <History className="h-4 w-4" />
+                  <span>Data Backfill</span>
                 </button>
               </div>
             </aside>
@@ -1933,6 +2106,79 @@ export default function App() {
                   </form>
                 )}
 
+                {/* TAB 4: HISTORICAL DATA BACKFILL */}
+                {settingsTab === 'backfill' && (
+                  <div className="space-y-6">
+                    <div>
+                      <h2 className="text-sm font-bold text-slate-800">Historical Data Backfill</h2>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        Proses ini akan merangkum ribuan email lama yang tersimpan di database agar sistem workflow kembali aktif dan terstruktur.
+                      </p>
+                    </div>
+
+                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 text-xs space-y-4">
+                      <p className="font-bold text-slate-700 uppercase tracking-wider text-[10px]">Backfill Parameters & Rules:</p>
+                      
+                      <ul className="list-disc pl-4 space-y-1.5 text-slate-600 leading-normal">
+                        <li>System analyzes the content of <strong>body_text</strong> of unsummarized emails deeply.</li>
+                        <li>If the email content is operational, it generates a highly descriptive <strong>summary</strong>.</li>
+                        <li>If the email is a simple system notification (such as Geofence), it generates a compact summary.</li>
+                        <li>All processed results are cleanly parsed and stored.</li>
+                        <li>If the email is system/technical, <strong>action_required</strong> is set to false unless there are clear repair actions.</li>
+                        <li>Emails that are not readable will automatically fallback to <strong>"Data historis tidak terbaca jelas"</strong> and <strong>action_required: false</strong>.</li>
+                      </ul>
+
+                      <div className="p-4 bg-blue-50/50 border border-blue-100 rounded-lg flex items-center justify-between mt-2">
+                        <div>
+                          <p className="font-bold text-blue-900">Trigger Historical Sync Workflow</p>
+                          <p className="text-[10px] text-blue-700/80 mt-0.5">Launches the LLM backend processor on unsummarized records.</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleFetchHistoricalData}
+                          disabled={isBackfilling}
+                          className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 disabled:from-slate-400 disabled:to-slate-400 text-white font-bold rounded-lg cursor-pointer transition-all shadow-sm flex items-center gap-1.5 text-xs"
+                        >
+                          {isBackfilling ? (
+                            <>
+                              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                              <span>Backfilling...</span>
+                            </>
+                          ) : (
+                            <>
+                              <History className="h-3.5 w-3.5" />
+                              <span>Fetch & Process Historical Data</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+
+                      {backfillResult && (
+                        <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl space-y-2 mt-4">
+                          <p className="font-bold text-emerald-900 flex items-center gap-1.5">
+                            <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                            Historical Backfill Completed Successfully!
+                          </p>
+                          <div className="grid grid-cols-3 gap-3 text-center mt-2">
+                            <div className="p-2.5 bg-white border border-emerald-100 rounded-lg shadow-sm">
+                              <span className="text-[10px] text-slate-400 block font-bold uppercase">Success</span>
+                              <span className="text-lg font-bold text-emerald-700">{backfillResult.processed}</span>
+                            </div>
+                            <div className="p-2.5 bg-white border border-emerald-100 rounded-lg shadow-sm">
+                              <span className="text-[10px] text-slate-400 block font-bold uppercase">Fallback / Err</span>
+                              <span className="text-lg font-bold text-rose-600">{backfillResult.failed}</span>
+                            </div>
+                            <div className="p-2.5 bg-white border border-emerald-100 rounded-lg shadow-sm">
+                              <span className="text-[10px] text-slate-400 block font-bold uppercase">Skipped</span>
+                              <span className="text-lg font-bold text-slate-500">{backfillResult.skipped}</span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
               </div>
             </section>
 
@@ -1940,6 +2186,228 @@ export default function App() {
         )}
 
       </main>
+
+      {/* 5. EDIT SUGGESTION MODAL OVERLAY */}
+      {isEditSuggestionOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white border border-slate-200 rounded-2xl shadow-2xl w-full max-w-xl flex flex-col overflow-hidden max-h-[90vh]">
+            {/* Modal Header */}
+            <div className="px-6 py-4 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <Sparkles className="h-4.5 w-4.5 text-blue-600 animate-pulse" />
+                <h3 className="text-sm font-bold text-slate-800">Review & Apply AI Penanganan Suggestion</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsEditSuggestionOpen(false)}
+                className="text-slate-400 hover:text-slate-600 text-lg font-bold leading-none cursor-pointer p-1 rounded"
+              >
+                &times;
+              </button>
+            </div>
+
+            {/* Modal Scrollable Body */}
+            <div className="p-6 overflow-y-auto space-y-4 text-xs select-text text-left">
+              
+              {/* Folder Mapping (Editable) */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-slate-500 font-bold mb-1">Folder Parent (Induk)</label>
+                  <input
+                    type="text"
+                    value={suggestionForm.folder_parent}
+                    onChange={(e) => setSuggestionForm({ ...suggestionForm, folder_parent: e.target.value })}
+                    placeholder="e.g. Bank Maybank"
+                    className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-medium"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-500 font-bold mb-1">Folder Child (Anak)</label>
+                  <input
+                    type="text"
+                    value={suggestionForm.folder_child}
+                    onChange={(e) => setSuggestionForm({ ...suggestionForm, folder_child: e.target.value })}
+                    placeholder="e.g. Collection"
+                    className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-medium"
+                  />
+                </div>
+              </div>
+
+              {/* Tag and Urgency */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-slate-500 font-bold mb-1">Suggested Tag (Category)</label>
+                  <input
+                    type="text"
+                    value={suggestionForm.suggested_tag}
+                    onChange={(e) => setSuggestionForm({ ...suggestionForm, suggested_tag: e.target.value })}
+                    placeholder="e.g. Collection, Penugasan, Informasi"
+                    className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-medium"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-500 font-bold mb-1">Urgency Level</label>
+                  <select
+                    value={suggestionForm.urgency_level}
+                    onChange={(e) => setSuggestionForm({ ...suggestionForm, urgency_level: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-medium"
+                  >
+                    <option value="Low">Low</option>
+                    <option value="Medium">Medium</option>
+                    <option value="High">High</option>
+                    <option value="Routine">Routine</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Checkboxes (Action Required, Important) */}
+              <div className="flex gap-4 p-3 bg-slate-50 rounded-xl border border-slate-200/50">
+                <label className="flex-1 flex items-center space-x-2 cursor-pointer font-medium text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={suggestionForm.action_required}
+                    onChange={(e) => setSuggestionForm({ ...suggestionForm, action_required: e.target.checked })}
+                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-slate-300 rounded"
+                  />
+                  <span>Action Required (Tindakan)</span>
+                </label>
+                <label className="flex-1 flex items-center space-x-2 cursor-pointer font-medium text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={suggestionForm.is_important}
+                    onChange={(e) => setSuggestionForm({ ...suggestionForm, is_important: e.target.checked })}
+                    className="h-4 w-4 text-rose-600 focus:ring-rose-500 border-slate-300 rounded"
+                  />
+                  <span>Is Important (Penting)</span>
+                </label>
+              </div>
+
+              {/* Summary Textarea */}
+              <div>
+                <label className="block text-slate-500 font-bold mb-1">Effective Summary</label>
+                <textarea
+                  value={suggestionForm.summary}
+                  onChange={(e) => setSuggestionForm({ ...suggestionForm, summary: e.target.value })}
+                  rows={3}
+                  placeholder="Review the AI generated summary..."
+                  className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-medium leading-relaxed"
+                />
+              </div>
+
+              {/* Automate: Create Filter Routing Rule (Optional checkbox) */}
+              <div className="pt-3 border-t border-slate-100">
+                <label className="flex items-center space-x-2 cursor-pointer font-bold text-slate-800">
+                  <input
+                    type="checkbox"
+                    checked={suggestionForm.create_filter_rule}
+                    onChange={(e) => setSuggestionForm({ ...suggestionForm, create_filter_rule: e.target.checked })}
+                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-slate-300 rounded"
+                  />
+                  <span>Create automated Filter Rule from this suggestion</span>
+                </label>
+                <p className="text-[10px] text-slate-400 mt-1 ml-6 leading-relaxed">
+                  Checking this will automatically create a dynamic filter rule, routing all future incoming emails matching these rules to the exact folders configured above.
+                </p>
+              </div>
+
+              {/* Collapsible rule settings if create_filter_rule checked */}
+              {suggestionForm.create_filter_rule && (
+                <div className="bg-blue-50/40 border border-blue-100 rounded-xl p-4.5 ml-6 space-y-3">
+                  <p className="font-bold text-blue-800 text-[10px] uppercase tracking-wider">Automated Filter Logic Settings</p>
+                  
+                  <div>
+                    <label className="block text-slate-500 font-semibold mb-0.5">Filter Rule Name</label>
+                    <input
+                      type="text"
+                      value={suggestionForm.filter_rule_name}
+                      onChange={(e) => setSuggestionForm({ ...suggestionForm, filter_rule_name: e.target.value })}
+                      placeholder="e.g. Bank Maybank Auto Router"
+                      className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-slate-500 font-semibold mb-0.5">Match Sender Address (Contains)</label>
+                      <input
+                        type="text"
+                        value={suggestionForm.filter_rule_match_from}
+                        onChange={(e) => setSuggestionForm({ ...suggestionForm, filter_rule_match_from: e.target.value })}
+                        placeholder="e.g. collection@bankmaybank.co.id"
+                        className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-500 font-semibold mb-0.5">Match Subject (Contains)</label>
+                      <input
+                        type="text"
+                        value={suggestionForm.filter_rule_match_subject}
+                        onChange={(e) => setSuggestionForm({ ...suggestionForm, filter_rule_match_subject: e.target.value })}
+                        placeholder="Optional"
+                        className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="flex items-center space-x-2 cursor-pointer text-slate-600 font-semibold mt-1">
+                      <input
+                        type="checkbox"
+                        checked={suggestionForm.filter_rule_trigger_api}
+                        onChange={(e) => setSuggestionForm({ ...suggestionForm, filter_rule_trigger_api: e.target.checked })}
+                        className="h-3.5 w-3.5 text-blue-600 border-slate-300 rounded"
+                      />
+                      <span>Trigger active Cash In Transit (CIT) API for this filter</span>
+                    </label>
+                  </div>
+                </div>
+              )}
+
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-end space-x-3">
+              <button
+                type="button"
+                onClick={() => setIsEditSuggestionOpen(false)}
+                className="px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 font-bold rounded-lg cursor-pointer transition-all text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const payload = {
+                    folder_parent: suggestionForm.folder_parent,
+                    folder_child: suggestionForm.folder_child,
+                    tags: [suggestionForm.suggested_tag],
+                    suggested_tag: suggestionForm.suggested_tag,
+                    is_important: suggestionForm.is_important,
+                    urgency_level: suggestionForm.urgency_level,
+                    summary: suggestionForm.summary,
+                    action_required: suggestionForm.action_required,
+                    create_filter_rule: suggestionForm.create_filter_rule,
+                    filter_rule: {
+                      name: suggestionForm.filter_rule_name,
+                      match_from: suggestionForm.filter_rule_match_from,
+                      match_subject: suggestionForm.filter_rule_match_subject,
+                      match_body: suggestionForm.filter_rule_match_body,
+                      action_parent: suggestionForm.folder_parent,
+                      action_child: suggestionForm.folder_child,
+                      trigger_api: suggestionForm.filter_rule_trigger_api
+                    }
+                  };
+                  await handleSmartApply(suggestionForm.message_id, payload);
+                  setIsEditSuggestionOpen(false);
+                }}
+                className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg cursor-pointer shadow-sm transition-all text-xs"
+              >
+                Apply suggestion
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Floating Toast Notification Area */}
       <div className="fixed bottom-6 right-6 z-50 space-y-2 pointer-events-none w-80">
