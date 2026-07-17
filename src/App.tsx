@@ -112,6 +112,7 @@ export default function App() {
   
   // Custom Filters State
   const [customFilters, setCustomFilters] = useState<CustomFilter[]>([]);
+  const [filterRules, setFilterRules] = useState<CustomFilter[]>([]);
   const [filterMsg, setFilterMsg] = useState('');
   const [editingFilterId, setEditingFilterId] = useState<number | null>(null);
   const [filterForm, setFilterForm] = useState<CustomFilter>({
@@ -355,6 +356,7 @@ export default function App() {
         const { data, error } = await supabase.from('custom_filters').select('*');
         if (!error && data) {
           setCustomFilters(data);
+          setFilterRules(data);
           return;
         } else if (error) {
           console.warn('Direct Supabase custom_filters fetch failed, falling back to local API', error);
@@ -368,6 +370,45 @@ export default function App() {
       const res = await fetch('/api/custom-filters');
       const data = await res.json();
       if (data.success && data.filters) {
+        setCustomFilters(data.filters);
+        setFilterRules(data.filters);
+      }
+    } catch (err) {
+      console.error('Failed to load filters:', err);
+    }
+  };
+
+  // Explicitly requested loadFilterRules helper to fetch filter rules in ASC order from Supabase
+  const loadFilterRules = async (providedSettings?: AppSettings) => {
+    const activeSettings = providedSettings || appSettings;
+    const url = activeSettings.supabaseUrl;
+    const key = activeSettings.supabaseKey;
+
+    if (url && key) {
+      try {
+        const supabase = createClient(url, key);
+        const { data, error } = await supabase
+          .from('custom_filters')
+          .select('*')
+          .order('created_at', { ascending: true });
+        
+        if (!error && data) {
+          setFilterRules(data);
+          setCustomFilters(data);
+          return;
+        } else if (error) {
+          console.warn('Direct Supabase custom_filters fetch failed for filterRules, falling back to local API', error);
+        }
+      } catch (err) {
+        console.error('Direct Supabase custom_filters fetch for filterRules exception:', err);
+      }
+    }
+
+    try {
+      const res = await fetch('/api/custom-filters');
+      const data = await res.json();
+      if (data.success && data.filters) {
+        setFilterRules(data.filters);
         setCustomFilters(data.filters);
       }
     } catch (err) {
@@ -426,13 +467,13 @@ export default function App() {
         } else {
           await loadEmails(settingsData.settings);
         }
-        await loadCustomFilters(finalSettings || undefined);
+        await loadFilterRules(finalSettings || undefined);
       } catch (err) {
         console.error('Error in initial mount fetch:', err);
         await loadEmails();
-        await loadCustomFilters();
+        await loadFilterRules();
       }
-      await loadCustomFilters();
+      await loadFilterRules();
     };
 
     fetchInitialData();
@@ -692,12 +733,14 @@ export default function App() {
         
         if (savedToSupabase && newFilterObj) {
           if (prevEditingId !== null) {
+            setFilterRules(prev => prev.map(f => f.id === prevEditingId ? newFilterObj : f));
             setCustomFilters(prev => prev.map(f => f.id === prevEditingId ? newFilterObj : f));
           } else {
+            setFilterRules(prev => [...prev, newFilterObj]);
             setCustomFilters(prev => [...prev, newFilterObj]);
           }
         } else {
-          await loadCustomFilters();
+          await loadFilterRules();
         }
 
         // Apply retroactive filter!
@@ -718,7 +761,7 @@ export default function App() {
             trigger_api: false
           });
           setEditingFilterId(null);
-          await loadCustomFilters();
+          await loadFilterRules();
           await loadEmails();
         }
       }
@@ -745,6 +788,7 @@ export default function App() {
         const { error } = await supabase.from('custom_filters').delete().eq('id', id);
         if (!error) {
           deletedFromSupabase = true;
+          setFilterRules(prev => prev.filter(f => f.id !== id));
           setCustomFilters(prev => prev.filter(f => f.id !== id));
         } else {
           console.error('[Supabase Delete Filter Error]:', error);
@@ -768,6 +812,7 @@ export default function App() {
       if (data.success) {
         addToast('Rule Deleted', 'Dynamic filter removed.');
         if (!deletedFromSupabase) {
+          setFilterRules(prev => prev.filter(f => f.id !== id));
           setCustomFilters(prev => prev.filter(f => f.id !== id));
         }
       } else {
@@ -1480,31 +1525,31 @@ export default function App() {
 
                     {/* Existing Rules CRUD Table */}
                     <div className="space-y-3">
-                      <p className="font-bold text-slate-700 text-[10px] uppercase tracking-wider">Configured Filter Rules ({customFilters.length})</p>
+                      <p className="font-bold text-slate-700 text-[10px] uppercase tracking-wider">Configured Filter Rules ({filterRules.length})</p>
 
-                      {customFilters.length === 0 ? (
+                      {filterRules.length === 0 ? (
                         <p className="text-xs text-slate-400 italic">No custom filter rules defined yet.</p>
                       ) : (
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          {customFilters.map(filter => (
-                            <div key={filter.id} className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow relative flex flex-col justify-between">
+                          {filterRules.map(rule => (
+                            <div key={rule.id} className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow relative flex flex-col justify-between">
                               <div>
                                 <div className="flex justify-between items-start">
-                                  <h4 className="font-bold text-slate-800 text-sm">{filter.name || '-'}</h4>
+                                  <h4 className="font-bold text-slate-800 text-sm">{rule.name || '-'}</h4>
                                   <div className="flex items-center space-x-1">
                                     <button
                                       type="button"
                                       onClick={() => {
-                                        if (filter.id) {
-                                          setEditingFilterId(filter.id);
+                                        if (rule.id) {
+                                          setEditingFilterId(rule.id);
                                           setFilterForm({
-                                            name: filter.name || '',
-                                            match_from: filter.match_from || '',
-                                            match_subject: filter.match_subject || '',
-                                            match_body: filter.match_body || '',
-                                            action_parent: filter.action_parent || '',
-                                            action_child: filter.action_child || '',
-                                            trigger_api: !!filter.trigger_api
+                                            name: rule.name || '',
+                                            match_from: rule.match_from || '',
+                                            match_subject: rule.match_subject || '',
+                                            match_body: rule.match_body || '',
+                                            action_parent: rule.action_parent || '',
+                                            action_child: rule.action_child || '',
+                                            trigger_api: !!rule.trigger_api
                                           });
                                           setFilterMsg('');
                                         }
@@ -1516,7 +1561,7 @@ export default function App() {
                                     </button>
                                     <button
                                       type="button"
-                                      onClick={() => filter.id && handleDeleteFilter(filter.id)}
+                                      onClick={() => rule.id && handleDeleteFilter(rule.id)}
                                       className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg cursor-pointer transition-colors"
                                       title="Delete rule"
                                     >
@@ -1527,15 +1572,15 @@ export default function App() {
                                 <div className="mt-3 space-y-1.5 text-xs text-slate-600 border-t border-slate-100 pt-3">
                                   <p className="flex justify-between gap-2">
                                     <span className="font-semibold text-slate-500">Match Sender (From):</span>
-                                    <span className="font-mono text-slate-700 break-all">{filter.match_from || '-'}</span>
+                                    <span className="font-mono text-slate-700 break-all">{rule.match_from || '-'}</span>
                                   </p>
                                   <p className="flex justify-between gap-2">
                                     <span className="font-semibold text-slate-500">Match Subject:</span>
-                                    <span className="text-slate-700">{filter.match_subject || '-'}</span>
+                                    <span className="text-slate-700">{rule.match_subject || '-'}</span>
                                   </p>
                                   <p className="flex justify-between gap-2">
                                     <span className="font-semibold text-slate-500">Match Body Text:</span>
-                                    <span className="text-slate-700">{filter.match_body || '-'}</span>
+                                    <span className="text-slate-700">{rule.match_body || '-'}</span>
                                   </p>
                                 </div>
                               </div>
@@ -1543,10 +1588,10 @@ export default function App() {
                                 <div className="flex items-center gap-1">
                                   <span className="text-[10px] text-slate-400 font-bold uppercase">Routing:</span>
                                   <span className="bg-blue-50 text-blue-700 px-2.5 py-1 rounded font-bold font-mono text-[10px] border border-blue-100">
-                                    {filter.action_parent || '-'} &gt; {filter.action_child || '-'}
+                                    {rule.action_parent || '-'} &gt; {rule.action_child || '-'}
                                   </span>
                                 </div>
-                                {filter.trigger_api ? (
+                                {rule.trigger_api ? (
                                   <span className="text-emerald-600 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded text-[10px] font-bold uppercase inline-flex items-center gap-1">
                                     <Zap className="h-3 w-3 fill-current" /> Active
                                   </span>
