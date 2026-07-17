@@ -18,6 +18,7 @@ import {
   Eye, 
   EyeOff,
   Trash2,
+  Pencil,
   Info,
   Clock,
   ArrowRight,
@@ -74,6 +75,29 @@ interface AppSettings {
   supabaseKey: string;
 }
 
+const stringToColor = (str: string) => {
+  if (!str) return '#64748b';
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  let color = '#';
+  for (let i = 0; i < 3; i++) {
+    const value = (hash >> (i * 8)) & 0xFF;
+    color += ('00' + value.toString(16)).slice(-2);
+  }
+  return color;
+};
+
+const getTagBadgeStyle = (str: string) => {
+  const color = stringToColor(str);
+  return {
+    backgroundColor: `${color}15`,
+    color: color,
+    borderColor: `${color}30`
+  };
+};
+
 export default function App() {
   // Navigation
   const [currentMenu, setCurrentMenu] = useState<'inbox' | 'settings'>('inbox');
@@ -89,6 +113,7 @@ export default function App() {
   // Custom Filters State
   const [customFilters, setCustomFilters] = useState<CustomFilter[]>([]);
   const [filterMsg, setFilterMsg] = useState('');
+  const [editingFilterId, setEditingFilterId] = useState<number | null>(null);
   const [filterForm, setFilterForm] = useState<CustomFilter>({
     name: '',
     match_from: '',
@@ -489,6 +514,96 @@ export default function App() {
     }
   };
 
+  // Apply retroactive filter to existing 'Lainnya' emails
+  const applyFilterToExistingEmails = async (newFilter: CustomFilter) => {
+    const url = appSettings.supabaseUrl;
+    const key = appSettings.supabaseKey;
+
+    if (!url || !key) {
+      console.warn('Supabase not fully configured. Skipping retroactive filter execution.');
+      return;
+    }
+
+    try {
+      const supabase = createClient(url, key);
+      // 1. Fetch emails with folder_parent = 'Lainnya'
+      const { data, error } = await supabase
+        .from('emails')
+        .select('*')
+        .eq('folder_parent', 'Lainnya');
+
+      if (error) {
+        console.error('Failed to fetch retroactive emails from Supabase:', error);
+        return;
+      }
+
+      if (!data || data.length === 0) {
+        console.log('No existing emails in "Lainnya" folder for retroactive filtering.');
+        return;
+      }
+
+      // 2. Filter matching ones
+      const matchedIds = data.filter((email: any) => {
+        let isMatch = true;
+        const senderLower = (email.sender || '').toLowerCase();
+        const subjectLower = (email.subject || '').toLowerCase();
+        const bodyLower = (email.body_text || '').toLowerCase();
+
+        if (!newFilter.match_from && !newFilter.match_subject && !newFilter.match_body) {
+          return false;
+        }
+
+        if (newFilter.match_from && !senderLower.includes(newFilter.match_from.toLowerCase())) {
+          isMatch = false;
+        }
+        if (newFilter.match_subject && !subjectLower.includes(newFilter.match_subject.toLowerCase())) {
+          isMatch = false;
+        }
+        if (newFilter.match_body && !bodyLower.includes(newFilter.match_body.toLowerCase())) {
+          isMatch = false;
+        }
+
+        return isMatch;
+      }).map((email: any) => email.message_id);
+
+      // 3. Update Supabase
+      if (matchedIds.length > 0) {
+        const { error: updateErr } = await supabase
+          .from('emails')
+          .update({
+            folder_parent: newFilter.action_parent,
+            folder_child: newFilter.action_child
+          })
+          .in('message_id', matchedIds);
+
+        if (updateErr) {
+          console.error('Failed to perform retroactive bulk update in Supabase:', updateErr);
+          addToast('Retroactive Sync Error', 'Failed to update matched tickets in Supabase.');
+        } else {
+          addToast('Retroactive Filter Applied', `Successfully re-classified ${matchedIds.length} ticket(s) to "${newFilter.action_parent} > ${newFilter.action_child}".`);
+        }
+      } else {
+        console.log('No matches found for retroactive filtering.');
+      }
+
+      // Also call local endpoint to sync SQLite
+      try {
+        await fetch('/api/retroactive-filter', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filter: newFilter })
+        });
+      } catch (localErr) {
+        console.error('Failed to sync retroactive updates to SQLite:', localErr);
+      }
+
+      // 4. Refresh state list email in Inbox
+      await loadEmails();
+    } catch (err) {
+      console.error('Error during retroactive filtering:', err);
+    }
+  };
+
   // Add/Edit Filter Rule
   const handleSaveFilter = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -505,7 +620,7 @@ export default function App() {
     if (url && key) {
       try {
         const supabase = createClient(url, key);
-        const payload = {
+        const payload: any = {
           name: filterForm.name.trim(),
           match_from: filterForm.match_from?.trim() || null,
           match_subject: filterForm.match_subject?.trim() || null,
@@ -514,7 +629,14 @@ export default function App() {
           action_child: filterForm.action_child.trim(),
           trigger_api: filterForm.trigger_api
         };
-        const { data, error } = await supabase.from('custom_filters').insert([payload]).select();
+        if (editingFilterId !== null) {
+          payload.id = editingFilterId;
+        }
+
+        const { data, error } = editingFilterId !== null
+          ? await supabase.from('custom_filters').upsert([payload]).select()
+          : await supabase.from('custom_filters').insert([payload]).select();
+
         if (!error && data && data[0]) {
           newFilterObj = data[0];
           savedToSupabase = true;
@@ -531,14 +653,29 @@ export default function App() {
     }
 
     try {
+      const localPayload = {
+        ...filterForm,
+        id: editingFilterId || undefined
+      };
       const res = await fetch('/api/custom-filters', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filter: filterForm })
+        body: JSON.stringify({ filter: localPayload })
       });
       const data = await res.json();
       if (data.success) {
-        setFilterMsg('Filter rule saved successfully!');
+        setFilterMsg(editingFilterId !== null ? 'Filter rule updated successfully!' : 'Filter rule saved successfully!');
+        
+        const filterToApply: CustomFilter = {
+          name: filterForm.name.trim(),
+          match_from: filterForm.match_from?.trim() || '',
+          match_subject: filterForm.match_subject?.trim() || '',
+          match_body: filterForm.match_body?.trim() || '',
+          action_parent: filterForm.action_parent.trim(),
+          action_child: filterForm.action_child.trim(),
+          trigger_api: filterForm.trigger_api
+        };
+
         setFilterForm({
           name: '',
           match_from: '',
@@ -548,16 +685,24 @@ export default function App() {
           action_child: '',
           trigger_api: false
         });
-        addToast('Rule Saved', 'Dynamic workflow tag filter registered.');
+        const prevEditingId = editingFilterId;
+        setEditingFilterId(null);
+
+        addToast(prevEditingId !== null ? 'Rule Updated' : 'Rule Saved', prevEditingId !== null ? 'Dynamic workflow tag filter updated.' : 'Dynamic workflow tag filter registered.');
         
         if (savedToSupabase && newFilterObj) {
-          setCustomFilters(prev => [...prev, newFilterObj]);
-        } else if (data.filter) {
-          setCustomFilters(prev => [...prev, data.filter]);
+          if (prevEditingId !== null) {
+            setCustomFilters(prev => prev.map(f => f.id === prevEditingId ? newFilterObj : f));
+          } else {
+            setCustomFilters(prev => [...prev, newFilterObj]);
+          }
         } else {
           await loadCustomFilters();
         }
-        await loadEmails(); // reclassify
+
+        // Apply retroactive filter!
+        await applyFilterToExistingEmails(filterToApply);
+        
       } else {
         if (!savedToSupabase) {
           setFilterMsg('Failed to save: ' + data.message);
@@ -572,6 +717,7 @@ export default function App() {
             action_child: '',
             trigger_api: false
           });
+          setEditingFilterId(null);
           await loadCustomFilters();
           await loadEmails();
         }
@@ -637,22 +783,11 @@ export default function App() {
     }
   };
 
-  // Clear Emails Database Cache
+  // Soft clear emails view state (Flush Inbox)
   const handleClearDatabase = async () => {
-    if (confirm('Are you sure you want to completely flush your mail list cache? (SQLite and Supabase)')) {
-      try {
-        const res = await fetch('/api/clear-emails', { method: 'POST' });
-        const data = await res.json();
-        if (data.success) {
-          addToast('Inbox Flushed', 'Cached tickets cleared.');
-          setTickets([]);
-          setSelectedEmail(null);
-          await loadFolders();
-        }
-      } catch (err) {
-        console.error('Failed to clear emails:', err);
-      }
-    }
+    setTickets([]);
+    setSelectedEmail(null);
+    addToast('Inbox Flushed', 'Inbox view cleared. Select any folder in the sidebar to re-fetch tickets.');
   };
 
   // Filters logic helper
@@ -832,7 +967,10 @@ export default function App() {
                 <nav className="space-y-1 text-xs">
                   {/* All Folders selection */}
                   <button
-                    onClick={() => setSelectedFolder('all')}
+                    onClick={async () => {
+                      setSelectedFolder('all');
+                      await loadEmails();
+                    }}
                     className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg transition-all cursor-pointer ${
                       selectedFolder === 'all' 
                         ? 'bg-blue-50 text-blue-700 font-semibold' 
@@ -868,7 +1006,10 @@ export default function App() {
                         <div key={parent} className="space-y-0.5">
                           {/* Parent Category Row */}
                           <div
-                            onClick={() => setSelectedFolder(`parent:${parent}`)}
+                            onClick={async () => {
+                              setSelectedFolder(`parent:${parent}`);
+                              await loadEmails();
+                            }}
                             className={`w-full flex items-center justify-between px-3 py-2 rounded-lg transition-all cursor-pointer group ${
                               selectedFolder === `parent:${parent}`
                                 ? 'bg-slate-100 text-slate-900 font-bold'
@@ -889,7 +1030,7 @@ export default function App() {
                               <Folder className="h-3.5 w-3.5 text-slate-400 group-hover:text-slate-600" />
                               <span className="truncate">{parent}</span>
                             </div>
-                            <span className="text-[9px] bg-slate-100 font-bold px-1.5 py-0.2 rounded text-slate-500">
+                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded border" style={getTagBadgeStyle(parent)}>
                               {totalCount}
                             </span>
                           </div>
@@ -902,7 +1043,10 @@ export default function App() {
                                 return (
                                   <button
                                     key={ch.child}
-                                    onClick={() => setSelectedFolder(`child:${parent}|||${ch.child}`)}
+                                    onClick={async () => {
+                                      setSelectedFolder(`child:${parent}|||${ch.child}`);
+                                      await loadEmails();
+                                    }}
                                     className={`w-full flex items-center justify-between py-1.5 px-2.5 rounded transition-all text-left truncate cursor-pointer ${
                                       isSelected
                                         ? 'bg-blue-50 text-blue-700 font-semibold'
@@ -910,9 +1054,7 @@ export default function App() {
                                     }`}
                                   >
                                     <span className="truncate text-[11px]">{ch.child}</span>
-                                    <span className={`text-[8px] px-1 py-0.1 font-bold rounded ${
-                                      isSelected ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-400'
-                                    }`}>
+                                    <span className="text-[8px] px-1 py-0.1 font-bold rounded border" style={getTagBadgeStyle(ch.child)}>
                                       {ch.count}
                                     </span>
                                   </button>
@@ -982,8 +1124,11 @@ export default function App() {
 
                         {/* Folder tags */}
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="bg-slate-100 text-slate-600 border border-slate-200 text-[9px] font-bold px-1.5 py-0.2 rounded font-mono">
-                            {email.folder_parent || 'Lainnya'} &gt; {email.folder_child || 'Uncategorized'}
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded border" style={getTagBadgeStyle(email.folder_parent || 'Lainnya')}>
+                            {email.folder_parent || 'Lainnya'}
+                          </span>
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded border" style={getTagBadgeStyle(email.folder_child || 'Uncategorized')}>
+                            {email.folder_child || 'Uncategorized'}
                           </span>
 
                           {email.api_workflow_status && email.api_workflow_status !== 'none' && (
@@ -1030,9 +1175,12 @@ export default function App() {
                         </div>
                       </div>
 
-                      <div className="text-right">
-                        <span className="bg-blue-50 text-blue-700 border border-blue-200 text-[10px] font-bold px-2.5 py-0.5 rounded-full inline-block">
-                          Folder: {selectedEmail.folder_parent || 'Lainnya'} / {selectedEmail.folder_child || 'Uncategorized'}
+                      <div className="flex items-center gap-1.5 justify-end">
+                        <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full border inline-block" style={getTagBadgeStyle(selectedEmail.folder_parent || 'Lainnya')}>
+                          Folder: {selectedEmail.folder_parent || 'Lainnya'}
+                        </span>
+                        <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full border inline-block" style={getTagBadgeStyle(selectedEmail.folder_child || 'Uncategorized')}>
+                          Sub: {selectedEmail.folder_child || 'Uncategorized'}
                         </span>
                       </div>
                     </div>
@@ -1204,7 +1352,7 @@ export default function App() {
                     <form onSubmit={handleSaveFilter} className="bg-slate-50 rounded-xl p-5 border border-slate-200/60 text-xs space-y-3.5">
                       <p className="font-bold text-slate-700 text-[10px] uppercase tracking-wider flex items-center gap-1">
                         <Plus className="h-3.5 w-3.5" />
-                        Create New Filter Rule
+                        {editingFilterId !== null ? 'Edit Filter Rule' : 'Create New Filter Rule'}
                       </p>
 
                       <div className="grid grid-cols-2 gap-4">
@@ -1295,12 +1443,35 @@ export default function App() {
                       </div>
 
                       <div className="flex items-center justify-between pt-2 border-t border-slate-200/60">
-                        <button
-                          type="submit"
-                          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg cursor-pointer text-xs"
-                        >
-                          Add Rule
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="submit"
+                            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg cursor-pointer text-xs"
+                          >
+                            {editingFilterId !== null ? 'Update Rule' : 'Add Rule'}
+                          </button>
+                          {editingFilterId !== null && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingFilterId(null);
+                                setFilterForm({
+                                  name: '',
+                                  match_from: '',
+                                  match_subject: '',
+                                  match_body: '',
+                                  action_parent: '',
+                                  action_child: '',
+                                  trigger_api: false
+                                });
+                                setFilterMsg('');
+                              }}
+                              className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold rounded-lg cursor-pointer text-xs"
+                            >
+                              Cancel Edit
+                            </button>
+                          )}
+                        </div>
                         {filterMsg && (
                           <span className="text-slate-600 italic font-semibold">{filterMsg}</span>
                         )}
@@ -1320,14 +1491,38 @@ export default function App() {
                               <div>
                                 <div className="flex justify-between items-start">
                                   <h4 className="font-bold text-slate-800 text-sm">{filter.name || '-'}</h4>
-                                  <button
-                                    type="button"
-                                    onClick={() => filter.id && handleDeleteFilter(filter.id)}
-                                    className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg cursor-pointer transition-colors"
-                                    title="Delete rule"
-                                  >
-                                    <Trash2 className="h-4 w-4" />
-                                  </button>
+                                  <div className="flex items-center space-x-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        if (filter.id) {
+                                          setEditingFilterId(filter.id);
+                                          setFilterForm({
+                                            name: filter.name || '',
+                                            match_from: filter.match_from || '',
+                                            match_subject: filter.match_subject || '',
+                                            match_body: filter.match_body || '',
+                                            action_parent: filter.action_parent || '',
+                                            action_child: filter.action_child || '',
+                                            trigger_api: !!filter.trigger_api
+                                          });
+                                          setFilterMsg('');
+                                        }
+                                      }}
+                                      className="p-1.5 text-blue-500 hover:text-blue-700 hover:bg-blue-50 rounded-lg cursor-pointer transition-colors"
+                                      title="Edit rule"
+                                    >
+                                      <Pencil className="h-4 w-4" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => filter.id && handleDeleteFilter(filter.id)}
+                                      className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg cursor-pointer transition-colors"
+                                      title="Delete rule"
+                                    >
+                                      <Trash2 className="h-4 w-4" />
+                                    </button>
+                                  </div>
                                 </div>
                                 <div className="mt-3 space-y-1.5 text-xs text-slate-600 border-t border-slate-100 pt-3">
                                   <p className="flex justify-between gap-2">

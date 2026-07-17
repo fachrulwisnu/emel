@@ -20,6 +20,7 @@ import importMboxHandler from "./api/import-mbox";
 import importEmlDirHandler from "./api/import-eml-dir";
 import foldersHandler from "./api/folders";
 import customFiltersHandler from "./api/custom-filters";
+import retroactiveFilterHandler from "./api/retroactive-filter";
 
 async function startServer() {
   const app = express();
@@ -124,6 +125,7 @@ async function startServer() {
   // Custom filters CRUD endpoints
   app.get("/api/custom-filters", customFiltersHandler);
   app.post("/api/custom-filters", customFiltersHandler);
+  app.post("/api/retroactive-filter", retroactiveFilterHandler);
 
   // Connection diagnostics & Simulator
   app.post("/api/test-connection", testConnectionHandler);

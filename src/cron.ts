@@ -93,117 +93,131 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
     const newItems = emailItems.filter(item => !existingMessageIds.has(item.uid));
     console.log(`[Cron Sync] Found ${newItems.length} new messages to fetch.`);
 
-    // Fetch and parse each new message
-    for (const item of newItems) {
-      try {
-        console.log(`[Cron Sync] Fetching message #${item.msgNum} (UID: ${item.uid})...`);
-        const retrRes = await client.sendCommand(`RETR ${item.msgNum}`, true);
-        const rawEmail = parsePop3Message(retrRes);
+    const BATCH_SIZE = 50;
 
-        // Parse with mailparser
-        const parsed = await simpleParser(rawEmail);
+    // Fetch and parse each new message in batches
+    for (let batchStart = 0; batchStart < newItems.length; batchStart += BATCH_SIZE) {
+      const batchItems = newItems.slice(batchStart, batchStart + BATCH_SIZE);
+      console.log(`[Cron Sync] Processing batch ${Math.floor(batchStart / BATCH_SIZE) + 1}/${Math.ceil(newItems.length / BATCH_SIZE)} (Items ${batchStart + 1} to ${Math.min(batchStart + BATCH_SIZE, newItems.length)})...`);
 
-        const subject = parsed.subject || '(No Subject)';
-        const dateStr = parsed.date ? parsed.date.toISOString() : new Date().toISOString();
-        
-        const fromVal = (parsed.from as any)?.value?.[0] || (parsed.from as any)?.[0] || {};
-        const senderStr = fromVal.name 
-          ? `${fromVal.name} <${fromVal.address}>` 
-          : (fromVal.address || 'Unknown Sender');
+      for (const item of batchItems) {
+        try {
+          console.log(`[Cron Sync] Fetching message #${item.msgNum} (UID: ${item.uid})...`);
+          const retrRes = await client.sendCommand(`RETR ${item.msgNum}`, true);
+          const rawEmail = parsePop3Message(retrRes);
 
-        const toVal = (parsed.to as any)?.value?.[0] || (parsed.to as any)?.[0] || {};
-        const receiverStr = toVal.address || 'fachrul.wisnu@advantagescm.com';
+          // Parse with mailparser
+          const parsed = await simpleParser(rawEmail);
 
-        const bodyText = parsed.text || '';
-        const htmlBody = parsed.textAsHtml || parsed.html || '';
+          const subject = parsed.subject || '(No Subject)';
+          const dateStr = parsed.date ? parsed.date.toISOString() : new Date().toISOString();
+          
+          const fromVal = (parsed.from as any)?.value?.[0] || (parsed.from as any)?.[0] || {};
+          const senderStr = fromVal.name 
+            ? `${fromVal.name} <${fromVal.address}>` 
+            : (fromVal.address || 'Unknown Sender');
 
-        // Determine tags
-        const tags: string[] = [];
-        const subjUpper = subject.toUpperCase();
-        if (subjUpper.includes('SPEEDTEST')) tags.push('Speedtest');
-        if (subjUpper.includes('APPROVAL')) tags.push('Approval');
-        if (subjUpper.includes('UAT')) tags.push('UAT');
-        if (subjUpper.includes('FSD')) tags.push('FSD');
-        if (subjUpper.includes('SIT')) tags.push('SIT');
-        if (tags.length === 0) tags.push('Other');
+          const toVal = (parsed.to as any)?.value?.[0] || (parsed.to as any)?.[0] || {};
+          const receiverStr = toVal.address || 'fachrul.wisnu@advantagescm.com';
 
-        // Match custom filters with logic AND on filled fields
-        let matchedFolderParent = '';
-        let matchedFolderChild = '';
-        let triggerApiWorkflow = false;
+          const bodyText = parsed.text || '';
+          const htmlBody = parsed.textAsHtml || parsed.html || '';
 
-        const filters = await dbGetCustomFilters();
-        for (const filter of filters) {
-          if (!filter.match_from && !filter.match_subject && !filter.match_body) {
-            continue;
+          // Determine tags
+          const tags: string[] = [];
+          const subjUpper = subject.toUpperCase();
+          if (subjUpper.includes('SPEEDTEST')) tags.push('Speedtest');
+          if (subjUpper.includes('APPROVAL')) tags.push('Approval');
+          if (subjUpper.includes('UAT')) tags.push('UAT');
+          if (subjUpper.includes('FSD')) tags.push('FSD');
+          if (subjUpper.includes('SIT')) tags.push('SIT');
+          if (tags.length === 0) tags.push('Other');
+
+          // Match custom filters with logic AND on filled fields
+          let matchedFolderParent = '';
+          let matchedFolderChild = '';
+          let triggerApiWorkflow = false;
+
+          const filters = await dbGetCustomFilters();
+          for (const filter of filters) {
+            if (!filter.match_from && !filter.match_subject && !filter.match_body) {
+              continue;
+            }
+            let isMatch = true;
+            if (filter.match_from && !senderStr.toLowerCase().includes(filter.match_from.toLowerCase())) isMatch = false;
+            if (filter.match_subject && !subject.toLowerCase().includes(filter.match_subject.toLowerCase())) isMatch = false;
+            if (filter.match_body && !bodyText.toLowerCase().includes(filter.match_body.toLowerCase())) isMatch = false;
+
+            if (isMatch) {
+              matchedFolderParent = filter.action_parent;
+              matchedFolderChild = filter.action_child;
+              triggerApiWorkflow = !!filter.trigger_api;
+              break;
+            }
           }
-          let isMatch = true;
-          if (filter.match_from && !senderStr.toLowerCase().includes(filter.match_from.toLowerCase())) isMatch = false;
-          if (filter.match_subject && !subject.toLowerCase().includes(filter.match_subject.toLowerCase())) isMatch = false;
-          if (filter.match_body && !bodyText.toLowerCase().includes(filter.match_body.toLowerCase())) isMatch = false;
 
-          if (isMatch) {
-            matchedFolderParent = filter.action_parent;
-            matchedFolderChild = filter.action_child;
-            triggerApiWorkflow = !!filter.trigger_api;
-            break;
+          // Trigger CIT API Automation Workflow if matched parent is 'Bank Order' or trigger_api is true
+          let apiWorkflowStatus = 'none';
+          let apiWorkflowLog = '';
+
+          if (matchedFolderParent === 'Bank Order' || triggerApiWorkflow) {
+            apiWorkflowStatus = 'pending';
+            console.log(`[Cron Sync] Triggering CIT API Workflow for Bank Order: "${subject}"`);
+            try {
+              const workflowResult = await triggerCitApiWorkflow(item.uid, subject, bodyText);
+              apiWorkflowStatus = workflowResult.success ? 'triggered' : 'failed';
+              apiWorkflowLog = workflowResult.log;
+            } catch (wfErr: any) {
+              apiWorkflowStatus = 'failed';
+              apiWorkflowLog = `CIT API Automation Exception: ${wfErr.message || String(wfErr)}`;
+            }
           }
-        }
 
-        // Trigger CIT API Automation Workflow if matched parent is 'Bank Order' or trigger_api is true
-        let apiWorkflowStatus = 'none';
-        let apiWorkflowLog = '';
+          const newEmail: Email = {
+            message_id: item.uid,
+            subject,
+            sender: senderStr,
+            receiver: receiverStr,
+            date: dateStr,
+            body_text: bodyText,
+            html_body: htmlBody,
+            tags,
+            folder_parent: matchedFolderParent || undefined,
+            folder_child: matchedFolderChild || undefined,
+            api_workflow_status: apiWorkflowStatus,
+            api_workflow_log: apiWorkflowLog
+          };
 
-        if (matchedFolderParent === 'Bank Order' || triggerApiWorkflow) {
-          apiWorkflowStatus = 'pending';
-          console.log(`[Cron Sync] Triggering CIT API Workflow for Bank Order: "${subject}"`);
-          try {
-            const workflowResult = await triggerCitApiWorkflow(item.uid, subject, bodyText);
-            apiWorkflowStatus = workflowResult.success ? 'triggered' : 'failed';
-            apiWorkflowLog = workflowResult.log;
-          } catch (wfErr: any) {
-            apiWorkflowStatus = 'failed';
-            apiWorkflowLog = `CIT API Automation Exception: ${wfErr.message || String(wfErr)}`;
+          // Save to DB (SQLite and Supabase)
+          await dbUpsertEmail(newEmail);
+          addedCount++;
+
+          // Broadcast to React frontend in real-time
+          if (broadcastEventFn) {
+            broadcastEventFn('email_synced', {
+              email: {
+                ...newEmail,
+                fromName: parsed.from?.value[0]?.name || parsed.from?.value[0]?.address || 'Unknown Sender',
+                fromAddress: parsed.from?.value[0]?.address || '',
+                body: bodyText,
+                bodyHtml: htmlBody,
+                folderParent: newEmail.folder_parent,
+                folderChild: newEmail.folder_child
+              },
+              message: `New email synced: "${subject}" tagged as "${newEmail.folder_parent || 'Lainnya'} > ${newEmail.folder_child || 'Uncategorized'}"`
+            });
           }
+
+        } catch (emailErr: any) {
+          console.error(`[Cron Sync] Failed to process message #${item.msgNum} (UID: ${item.uid}):`, emailErr);
         }
+      }
 
-        const newEmail: Email = {
-          message_id: item.uid,
-          subject,
-          sender: senderStr,
-          receiver: receiverStr,
-          date: dateStr,
-          body_text: bodyText,
-          html_body: htmlBody,
-          tags,
-          folder_parent: matchedFolderParent || undefined,
-          folder_child: matchedFolderChild || undefined,
-          api_workflow_status: apiWorkflowStatus,
-          api_workflow_log: apiWorkflowLog
-        };
-
-        // Save to DB (SQLite and Supabase)
-        await dbUpsertEmail(newEmail);
-        addedCount++;
-
-        // Broadcast to React frontend in real-time
-        if (broadcastEventFn) {
-          broadcastEventFn('email_synced', {
-            email: {
-              ...newEmail,
-              fromName: parsed.from?.value[0]?.name || parsed.from?.value[0]?.address || 'Unknown Sender',
-              fromAddress: parsed.from?.value[0]?.address || '',
-              body: bodyText,
-              bodyHtml: htmlBody,
-              folderParent: newEmail.folder_parent,
-              folderChild: newEmail.folder_child
-            },
-            message: `New email synced: "${subject}" tagged as "${newEmail.folder_parent || 'Lainnya'} > ${newEmail.folder_child || 'Uncategorized'}"`
-          });
-        }
-
-      } catch (emailErr: any) {
-        console.error(`[Cron Sync] Failed to process message #${item.msgNum}:`, emailErr);
+      // Memory cleanup: trigger GC if available
+      if (typeof global !== 'undefined' && (global as any).gc) {
+        try {
+          (global as any).gc();
+        } catch (gcErr) {}
       }
     }
 

@@ -523,3 +523,41 @@ export async function dbClearEmails(): Promise<void> {
     }
   }
 }
+
+// Apply retroactive filter to local SQLite database
+export async function dbApplyRetroactiveFilter(filter: CustomFilter): Promise<number> {
+  const db = getSqliteDb();
+  return new Promise<number>((resolve, reject) => {
+    db.all("SELECT * FROM emails WHERE folder_parent = 'Lainnya'", (err, rows: any[]) => {
+      if (err) return reject(err);
+      if (!rows || rows.length === 0) return resolve(0);
+
+      let matchedCount = 0;
+      const stmt = db.prepare("UPDATE emails SET folder_parent = ?, folder_child = ? WHERE message_id = ?");
+
+      for (const row of rows) {
+        let isMatch = true;
+        const senderLower = (row.sender || '').toLowerCase();
+        const subjectLower = (row.subject || '').toLowerCase();
+        const bodyLower = (row.body_text || '').toLowerCase();
+
+        if (!filter.match_from && !filter.match_subject && !filter.match_body) {
+          continue;
+        }
+
+        if (filter.match_from && !senderLower.includes(filter.match_from.toLowerCase())) isMatch = false;
+        if (filter.match_subject && !subjectLower.includes(filter.match_subject.toLowerCase())) isMatch = false;
+        if (filter.match_body && !bodyLower.includes(filter.match_body.toLowerCase())) isMatch = false;
+
+        if (isMatch) {
+          matchedCount++;
+          stmt.run(filter.action_parent, filter.action_child, row.message_id);
+        }
+      }
+
+      stmt.finalize();
+      resolve(matchedCount);
+    });
+  });
+}
+
