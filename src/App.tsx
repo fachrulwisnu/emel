@@ -32,9 +32,11 @@ import {
   ChevronUp,
   Sparkles,
   History,
-  Coins
+  Coins,
+  MoreVertical
 } from 'lucide-react';
 import CitDashboard from './components/CitDashboard';
+import CitOrderModal from './components/CitOrderModal';
 
 interface Email {
   id?: number;
@@ -67,6 +69,8 @@ interface Email {
   urgency_level?: string;
   is_cit_order?: boolean;
   cit_type?: string;
+  suggested_bank?: string;
+  extracted_notes?: string;
 }
 
 interface CustomFilter {
@@ -186,6 +190,57 @@ export default function App() {
     filter_rule_match_body: '',
     filter_rule_trigger_api: false
   });
+
+  const [isCitOrderModalOpen, setIsCitOrderModalOpen] = useState(false);
+  const [citOrderPrefillEmail, setCitOrderPrefillEmail] = useState<Email | null>(null);
+  const [activeContextMenuId, setActiveContextMenuId] = useState<string | null>(null);
+
+  const toggleCitOrderMark = async (email: Email) => {
+    try {
+      const nextIsCitOrder = !email.is_cit_order;
+      // Optimistically update local state first
+      setTickets(prev => prev.map(t => t.message_id === email.message_id ? { 
+        ...t, 
+        is_cit_order: nextIsCitOrder,
+        cit_type: nextIsCitOrder ? (t.cit_type === 'None' || !t.cit_type ? 'CIT' : t.cit_type) : 'None'
+      } : t));
+      
+      if (selectedEmail?.message_id === email.message_id) {
+        setSelectedEmail(prev => prev ? {
+          ...prev,
+          is_cit_order: nextIsCitOrder,
+          cit_type: nextIsCitOrder ? (prev.cit_type === 'None' || !prev.cit_type ? 'CIT' : prev.cit_type) : 'None'
+        } : null);
+      }
+
+      // API call to update the fields
+      const response = await fetch('/api/emails/update-fields', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message_id: email.message_id,
+          fields: {
+            is_cit_order: nextIsCitOrder,
+            cit_type: nextIsCitOrder ? (email.cit_type === 'None' || !email.cit_type ? 'CIT' : email.cit_type) : 'None'
+          }
+        })
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        addToast(
+          nextIsCitOrder ? 'Marked as CIT Order' : 'Unmarked as CIT Order', 
+          `Email "${email.subject}" successfully updated.`
+        );
+        await loadEmails(); // Refresh list to get all synced data
+      } else {
+        addToast('Error Updating CIT Mark', data.message || 'Unknown error occurred.');
+      }
+    } catch (err: any) {
+      console.error('Failed to toggle CIT order status:', err);
+      addToast('Error', err.message || 'Failed to update CIT order status.');
+    }
+  };
 
   const handleSmartApply = async (
     emailId: string, 
@@ -1306,14 +1361,71 @@ export default function App() {
                       <div
                         key={email.message_id}
                         onClick={() => handleSelectEmail(email)}
-                        className={`p-4 transition-all cursor-pointer border-l-4 text-left relative ${
+                        className={`p-4 transition-all cursor-pointer border-l-4 text-left relative group ${
                           isSelected 
                             ? 'bg-blue-50/70 border-blue-600' 
                             : 'hover:bg-slate-50 border-transparent'
                         }`}
                       >
-                        <div className="flex items-center justify-between mb-1.5">
-                          <span className="font-bold text-slate-800 text-xs truncate max-w-[160px] flex items-center gap-1.5">
+                        {/* Context Action Menu (Three dots) */}
+                        <div className="absolute right-3 top-3.5 z-10">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveContextMenuId(activeContextMenuId === email.message_id ? null : email.message_id);
+                            }}
+                            className="p-1 hover:bg-slate-200/80 rounded-full text-slate-400 hover:text-slate-700 transition-all cursor-pointer inline-flex items-center justify-center"
+                            title="CIT Actions"
+                          >
+                            <MoreVertical className="h-3.5 w-3.5" />
+                          </button>
+                          
+                          {activeContextMenuId === email.message_id && (
+                            <>
+                              <div 
+                                className="fixed inset-0 z-10" 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActiveContextMenuId(null);
+                                }}
+                              />
+                              <div 
+                                className="absolute right-0 mt-1 w-52 bg-white border border-slate-200 rounded-xl shadow-xl z-20 overflow-hidden text-xs py-1 animate-fade-in text-left font-sans"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setCitOrderPrefillEmail(email);
+                                    setIsCitOrderModalOpen(true);
+                                    setActiveContextMenuId(null);
+                                  }}
+                                  className="w-full text-left px-3.5 py-2.5 hover:bg-blue-50 text-slate-700 hover:text-blue-700 font-bold flex items-center gap-2 cursor-pointer transition-colors"
+                                >
+                                  <Coins className="h-4 w-4 text-blue-600 shrink-0" />
+                                  <span>Create CIT/ATM Order</span>
+                                </button>
+                                
+                                <div className="border-t border-slate-100 my-1" />
+                                
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    toggleCitOrderMark(email);
+                                    setActiveContextMenuId(null);
+                                  }}
+                                  className="w-full text-left px-3.5 py-2.5 hover:bg-slate-50 text-slate-700 hover:text-slate-900 font-bold flex items-center gap-2 cursor-pointer transition-colors"
+                                >
+                                  <Zap className="h-4 w-4 text-amber-500 shrink-0" />
+                                  <span>{email.is_cit_order ? 'Unmark as CIT Order' : 'Mark as CIT Order'}</span>
+                                </button>
+                              </div>
+                            </>
+                          )}
+                        </div>
+
+                        <div className="flex items-center justify-between mb-1.5 pr-6">
+                          <span className="font-bold text-slate-800 text-xs truncate max-w-[140px] flex items-center gap-1.5">
                             {!email.is_read && (
                               <span className="w-1.5 h-1.5 rounded-full bg-blue-600 shrink-0 inline-block" title="Unread" />
                             )}
@@ -1324,7 +1436,7 @@ export default function App() {
                           </span>
                         </div>
 
-                        <p className={`text-xs font-semibold leading-snug truncate mb-1 ${
+                        <p className={`text-xs font-semibold leading-snug truncate mb-1 pr-4 ${
                           isSelected ? 'text-blue-800' : 'text-slate-700'
                         }`}>
                           {email.subject}
@@ -1343,13 +1455,24 @@ export default function App() {
                             {email.folder_child || 'Uncategorized'}
                           </span>
 
+                          {email.is_cit_order && (
+                            <span className={`text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded border shadow-xs flex items-center gap-1 ${
+                              email.cit_type === 'ATM' 
+                                ? 'bg-indigo-50 text-indigo-700 border-indigo-200' 
+                                : 'bg-amber-50 text-amber-700 border-amber-200'
+                            }`}>
+                              <Coins className="h-2.5 w-2.5 shrink-0" />
+                              <span>{email.cit_type || 'CIT'} {email.suggested_bank ? `(${email.suggested_bank})` : 'Order'}</span>
+                            </span>
+                          )}
+
                           {email.tag_type && (
                             <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${
                               email.tag_type === 'Penugasan' 
-                                ? 'bg-amber-50 text-amber-700 border-amber-200' 
+                                ? 'bg-amber-50/60 text-amber-700 border-amber-200' 
                                 : email.tag_type === 'Peringatan'
-                                ? 'bg-rose-50 text-rose-700 border-rose-200'
-                                : 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                                ? 'bg-rose-50/60 text-rose-700 border-rose-200'
+                                : 'bg-indigo-50/60 text-indigo-700 border-indigo-200'
                             }`}>
                               {email.tag_type}
                             </span>
@@ -1400,6 +1523,16 @@ export default function App() {
                       </div>
 
                       <div className="flex items-center gap-1.5 justify-end">
+                        {selectedEmail.is_cit_order && (
+                          <span className={`text-[10px] font-extrabold uppercase px-2.5 py-0.5 rounded-full border flex items-center gap-1 shadow-xs ${
+                            selectedEmail.cit_type === 'ATM' 
+                              ? 'bg-indigo-50 text-indigo-700 border-indigo-200' 
+                              : 'bg-amber-50 text-amber-700 border-amber-200'
+                          }`}>
+                            <Coins className="h-3 w-3 shrink-0" />
+                            <span>{selectedEmail.cit_type || 'CIT'} {selectedEmail.suggested_bank ? `(${selectedEmail.suggested_bank})` : 'Order'}</span>
+                          </span>
+                        )}
                         <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full border inline-block" style={getTagBadgeStyle(selectedEmail.folder_parent || 'Lainnya')}>
                           Folder: {selectedEmail.folder_parent || 'Lainnya'}
                         </span>
@@ -2452,6 +2585,22 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* CIT Order Creation Modal Overlay */}
+      <CitOrderModal
+        isOpen={isCitOrderModalOpen}
+        onClose={() => {
+          setIsCitOrderModalOpen(false);
+          setCitOrderPrefillEmail(null);
+        }}
+        onAddToast={addToast}
+        prefillEmail={citOrderPrefillEmail}
+        onOrderCreated={async () => {
+          setIsCitOrderModalOpen(false);
+          setCitOrderPrefillEmail(null);
+          await loadEmails(); // Reload emails to show updated state
+        }}
+      />
 
       {/* Floating Toast Notification Area */}
       <div className="fixed bottom-6 right-6 z-50 space-y-2 pointer-events-none w-80">

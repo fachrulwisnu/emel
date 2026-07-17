@@ -128,6 +128,23 @@ async function startServer() {
     }
   });
 
+  // Update arbitrary email fields
+  app.post("/api/emails/update-fields", async (req, res) => {
+    try {
+      const { message_id, fields } = req.body;
+      if (!message_id) {
+        return res.status(400).json({ success: false, message: "Missing message_id" });
+      }
+      if (!fields) {
+        return res.status(400).json({ success: false, message: "Missing fields object" });
+      }
+      await dbUpdateEmailFields(message_id, fields);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
   // Apply AI Suggestion and folder mapping ("Smart Apply")
   app.post("/api/emails/smart-apply", async (req, res) => {
     try {
@@ -235,7 +252,7 @@ async function startServer() {
     try {
       const settings = getAppSettings();
       const token = settings.citApiToken || process.env.CIT_API_TOKEN || '';
-      const response = await axios.get(`${CIT_BASE}/CIT-read_currencies`, {
+      const response = await axios.get(`${CIT_BASE}/read_currencies`, {
         headers: { 'Authorization': token ? `Bearer ${token}` : '' }
       });
       res.json(response.data);
@@ -249,7 +266,7 @@ async function startServer() {
     try {
       const settings = getAppSettings();
       const token = settings.citApiToken || process.env.CIT_API_TOKEN || '';
-      const response = await axios.get(`${CIT_BASE}/CIT-read_scitems`, {
+      const response = await axios.get(`${CIT_BASE}/read_scitems`, {
         headers: { 'Authorization': token ? `Bearer ${token}` : '' }
       });
       res.json(response.data);
@@ -263,7 +280,7 @@ async function startServer() {
     try {
       const settings = getAppSettings();
       const token = settings.citApiToken || process.env.CIT_API_TOKEN || '';
-      const response = await axios.get(`${CIT_BASE}/CIT-read_entity_master_details`, {
+      const response = await axios.get(`${CIT_BASE}/read_entity_master_details`, {
         headers: { 'Authorization': token ? `Bearer ${token}` : '' }
       });
       res.json(response.data);
@@ -277,7 +294,7 @@ async function startServer() {
     try {
       const settings = getAppSettings();
       const token = settings.citApiToken || process.env.CIT_API_TOKEN || '';
-      const response = await axios.get(`${CIT_BASE}/CIT-read_vault_trips`, {
+      const response = await axios.get(`${CIT_BASE}/read_vault_trips`, {
         headers: { 'Authorization': token ? `Bearer ${token}` : '' }
       });
       res.json(response.data);
@@ -299,7 +316,7 @@ async function startServer() {
     try {
       const settings = getAppSettings();
       const token = settings.citApiToken || process.env.CIT_API_TOKEN || '';
-      const response = await axios.post(`${CIT_BASE}/CIT-create_delivery`, req.body, {
+      const response = await axios.post(`${CIT_BASE}/create_delivery`, req.body, {
         headers: { 
           'Authorization': token ? `Bearer ${token}` : '',
           'Content-Type': 'application/json'
@@ -316,7 +333,7 @@ async function startServer() {
     try {
       const settings = getAppSettings();
       const token = settings.citApiToken || process.env.CIT_API_TOKEN || '';
-      const response = await axios.post(`${CIT_BASE}/CIT-create_delivery_detail`, req.body, {
+      const response = await axios.post(`${CIT_BASE}/create_delivery_detail`, req.body, {
         headers: { 
           'Authorization': token ? `Bearer ${token}` : '',
           'Content-Type': 'application/json'
