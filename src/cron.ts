@@ -241,7 +241,11 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
     console.error('[Cron Sync] Critical error in sync workflow:', err);
     return { success: false, count: 0, message: `Critical error: ${err.message || String(err)}` };
   } finally {
-    client.close();
+    try {
+      client.close();
+    } catch (closeErr) {
+      console.warn('[Cron Sync] Warning: Error closing POP3 client:', closeErr);
+    }
     isSyncing = false;
     console.log(`=== [BACKGROUND POP3 AUTO-SYNC END] ===\n`);
   }

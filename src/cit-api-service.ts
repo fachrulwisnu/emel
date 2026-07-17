@@ -71,7 +71,7 @@ export async function triggerCitApiWorkflow(emailId: string, subject: string, bo
     workflowLog += `[Step 1a] Fetching currencies from Active ATM API...\n`;
     let currencyId = 1; // Default fallback ID
     try {
-      const currenciesRes = await axios.get('https://api-activeatm.adv.my.id/api/v1/CIT/CIT-read_currencies', { headers, timeout: 8000 });
+      const currenciesRes = await axios.get('https://api-activeatm.adv.my.id/api/v1/CIT/read_currencies', { headers, timeout: 8000 });
       workflowLog += `[Step 1a Success] Currencies count: ${currenciesRes.data?.data?.length || 0}\n`;
       
       const foundCurrency = currenciesRes.data?.data?.find((c: any) => 
@@ -91,7 +91,7 @@ export async function triggerCitApiWorkflow(emailId: string, subject: string, bo
     workflowLog += `[Step 1b] Fetching entity master details (branches) from Active ATM API...\n`;
     let branchId = 5; // Default fallback ID (e.g., Purwokerto/General)
     try {
-      const branchRes = await axios.get('https://api-activeatm.adv.my.id/api/v1/CIT/CIT-read_entity_master_details', { headers, timeout: 8000 });
+      const branchRes = await axios.get('https://api-activeatm.adv.my.id/api/v1/CIT/read_entity_master_details', { headers, timeout: 8000 });
       workflowLog += `[Step 1b Success] Branches count: ${branchRes.data?.data?.length || 0}\n`;
 
       const foundBranch = branchRes.data?.data?.find((b: any) => 
@@ -121,7 +121,7 @@ export async function triggerCitApiWorkflow(emailId: string, subject: string, bo
     let deliveryId = 101; // default fallback delivery ID
     try {
       const deliveryRes = await axios.post(
-        'https://api-activeatm.adv.my.id/api/v1/CIT/CIT-create_delivery',
+        'https://api-activeatm.adv.my.id/api/v1/CIT/create_delivery',
         deliveryPayload,
         { headers, timeout: 10000 }
       );
@@ -144,7 +144,7 @@ export async function triggerCitApiWorkflow(emailId: string, subject: string, bo
 
     try {
       const detailRes = await axios.post(
-        'https://api-activeatm.adv.my.id/api/v1/CIT/CIT-create_delivery_detail',
+        'https://api-activeatm.adv.my.id/api/v1/CIT/create_delivery_detail',
         detailPayload,
         { headers, timeout: 10000 }
       );

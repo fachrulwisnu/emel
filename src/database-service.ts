@@ -668,8 +668,8 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
   let suggestedFolderChild = email.suggested_folder_child;
   let isCitOrder = email.is_cit_order;
   let citType = email.cit_type !== undefined && email.cit_type !== null ? email.cit_type : 'None';
-  let suggestedBank = email.suggested_bank;
-  let extractedNotes = email.extracted_notes;
+  let suggestedBank = email.suggested_bank !== undefined && email.suggested_bank !== null ? email.suggested_bank : '';
+  let extractedNotes = email.extracted_notes !== undefined && email.extracted_notes !== null ? email.extracted_notes : '';
   let tags = email.tags || [];
   let isRead = email.is_read !== undefined ? email.is_read : false;
 
@@ -692,8 +692,8 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
     if (!suggestedFolderChild) suggestedFolderChild = existing.suggested_folder_child;
     if (isCitOrder === undefined) isCitOrder = existing.is_cit_order === 1;
     if (email.cit_type === undefined) citType = existing.cit_type || 'None';
-    if (!suggestedBank) suggestedBank = existing.suggested_bank;
-    if (!extractedNotes) extractedNotes = existing.extracted_notes;
+    if (email.suggested_bank === undefined) suggestedBank = existing.suggested_bank !== undefined ? existing.suggested_bank : '';
+    if (email.extracted_notes === undefined) extractedNotes = existing.extracted_notes !== undefined ? existing.extracted_notes : '';
     try {
       if (tags.length === 0 && existing.tags) {
         tags = JSON.parse(existing.tags);
@@ -839,16 +839,16 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
         api_workflow_status: normalizedEmail.api_workflow_status !== undefined ? normalizedEmail.api_workflow_status : null,
         api_workflow_log: normalizedEmail.api_workflow_log !== undefined ? normalizedEmail.api_workflow_log : null,
         // AI fields
-        is_read: isRead,
+        is_read: !!isRead,
         tag_type: tagType || null,
         summary: summary || null,
-        action_required: actionRequired,
+        action_required: !!actionRequired,
         suggested_tag: suggestedTag || null,
-        is_important: isImportant,
+        is_important: !!isImportant,
         urgency_level: urgencyLevel || null,
         suggested_folder_parent: suggestedFolderParent || null,
         suggested_folder_child: suggestedFolderChild || null,
-        is_cit_order: isCitOrder,
+        is_cit_order: !!isCitOrder,
         cit_type: citType || 'None',
         suggested_bank: suggestedBank || '',
         extracted_notes: extractedNotes || ''

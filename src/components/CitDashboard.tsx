@@ -42,6 +42,56 @@ export default function CitDashboard({
   const [isLoading, setIsLoading] = useState(false);
   const [filterType, setFilterType] = useState<'all' | 'CIT' | 'ATM'>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [localToast, setLocalToast] = useState<{ title: string; message: string } | null>(null);
+
+  // Detail sidebar states
+  const [selectedOrderDetails, setSelectedOrderDetails] = useState<VaultTrip | null>(null);
+  const [isDetailSidebarOpen, setIsDetailSidebarOpen] = useState(false);
+  const [isLoadingDetail, setIsLoadingDetail] = useState(false);
+
+  // Handle row click to fetch and show trip details
+  const handleRowClick = async (order: VaultTrip) => {
+    setIsLoadingDetail(true);
+    setIsDetailSidebarOpen(true);
+    setSelectedOrderDetails(order);
+    try {
+      // Simulate/call read_vault_trips from API
+      const trips = await citApi.getVaultTrips();
+      const matched = trips.find(t => t.order_id === order.order_id || t.id === order.id);
+      if (matched) {
+        setSelectedOrderDetails(matched);
+      }
+    } catch (err) {
+      console.error('Error loading vault trip detail:', err);
+    } finally {
+      setIsLoadingDetail(false);
+    }
+  };
+
+  // Handle status update of the selected trip
+  const handleUpdateStatus = async (status: string) => {
+    if (!selectedOrderDetails) return;
+    const orderId = selectedOrderDetails.order_id;
+    
+    // Dynamically update state
+    setOrders(prev => prev.map(o => o.order_id === orderId ? { ...o, status } : o));
+    setSelectedOrderDetails(prev => prev ? { ...prev, status } : null);
+    
+    // Fire dark mode floating toast
+    const msg = `Trip ${orderId} updated to ${status}. Distribution routed in real-time.`;
+    onAddToast('Operational Detail', msg);
+    setLocalToast({ title: 'Operational Detail', message: msg });
+  };
+
+  // Auto-clear local toast
+  useEffect(() => {
+    if (localToast) {
+      const timer = setTimeout(() => {
+        setLocalToast(null);
+      }, 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [localToast]);
   
   // Modal state
   const [isModalOpen, setIsModalOpen] = useState(showCreateModalInitially);
@@ -372,9 +422,13 @@ export default function CitDashboard({
                 </tr>
               ) : (
                 filteredOrders.map((order, idx) => (
-                  <tr key={order.order_id || idx} className="hover:bg-slate-50/50 transition-colors">
+                  <tr 
+                    key={order.order_id || idx} 
+                    onClick={() => handleRowClick(order)}
+                    className="hover:bg-slate-50/50 transition-colors cursor-pointer"
+                  >
                     <td className="py-4 px-5 font-bold font-mono text-slate-950 flex items-center gap-1.5">
-                      <div className={`w-1.5 h-1.5 rounded-full ${order.status === 'Completed' ? 'bg-emerald-500' : 'bg-amber-500'}`}></div>
+                      <div className={`w-1.5 h-1.5 rounded-full ${order.status === 'Completed' ? 'bg-emerald-500' : (order.status === 'In Progress' ? 'bg-blue-500' : 'bg-slate-400')}`}></div>
                       {order.order_id || `TRIP-${idx + 1005}`}
                     </td>
                     <td className="py-4 px-5 font-semibold text-blue-600 font-mono">
@@ -399,8 +453,9 @@ export default function CitDashboard({
                     </td>
                     <td className="py-4 px-5 text-right">
                       <button
-                        onClick={() => {
-                          onAddToast('Operational Detail', `Trip ${order.order_id} active. Distribution routed in real-time.`);
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleRowClick(order);
                         }}
                         className="p-1 hover:bg-slate-100 text-slate-400 hover:text-slate-600 rounded transition-all cursor-pointer"
                         title="View Route Details"
@@ -577,6 +632,183 @@ export default function CitDashboard({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* DETAIL SIDEBAR OVERLAY */}
+      {isDetailSidebarOpen && (
+        <div 
+          className="fixed inset-0 bg-slate-950/40 z-40 backdrop-blur-xs animate-fade-in"
+          onClick={() => setIsDetailSidebarOpen(false)}
+        />
+      )}
+
+      {/* DETAIL SIDEBAR (DRAWER) */}
+      {isDetailSidebarOpen && selectedOrderDetails && (
+        <div className="fixed inset-y-0 right-0 z-50 w-full max-w-md bg-white border-l border-slate-200 shadow-2xl flex flex-col animate-slide-in text-slate-800">
+          {/* Header */}
+          <div className="p-5 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Building2 className="h-5 w-5 text-blue-600" />
+              <div>
+                <h3 className="font-bold text-slate-900 text-sm">Trip Operational Detail</h3>
+                <span className="text-[10px] text-slate-400 font-mono font-medium">{selectedOrderDetails.order_id}</span>
+              </div>
+            </div>
+            <button 
+              onClick={() => setIsDetailSidebarOpen(false)}
+              className="text-slate-400 hover:text-slate-600 p-1.5 hover:bg-slate-100 rounded-lg cursor-pointer font-bold text-lg"
+            >
+              &times;
+            </button>
+          </div>
+
+          {/* Body */}
+          <div className="flex-1 overflow-y-auto p-5 space-y-5">
+            {isLoadingDetail ? (
+              <div className="flex flex-col items-center justify-center py-20 text-slate-400">
+                <RefreshCw className="h-8 w-8 animate-spin text-blue-500 mb-2" />
+                <p className="text-xs font-semibold">Memuat data dispatch...</p>
+              </div>
+            ) : (
+              <>
+                {/* Trip ID Cards */}
+                <div className="bg-slate-50 border border-slate-150 rounded-xl p-4.5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Trip Status</span>
+                    <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${
+                      selectedOrderDetails.status === 'Completed'
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                        : selectedOrderDetails.status === 'In Progress'
+                        ? 'bg-blue-50 text-blue-700 border-blue-200 animate-pulse'
+                        : 'bg-slate-100 text-slate-600 border-slate-200'
+                    }`}>
+                      {selectedOrderDetails.status || 'Idle'}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4 pt-2 border-t border-slate-200/60">
+                    <div>
+                      <span className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider">Order ID</span>
+                      <span className="font-mono font-bold text-xs text-slate-900">{selectedOrderDetails.order_id}</span>
+                    </div>
+                    <div>
+                      <span className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider">Ticket ID</span>
+                      <span className="font-mono font-bold text-xs text-blue-600">{selectedOrderDetails.ticket_id || 'M-DISPATCH'}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Routing Details */}
+                <div className="space-y-3">
+                  <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">Routing & Target</h4>
+                  
+                  <div className="flex items-start gap-3">
+                    <div className="p-2 bg-blue-50 text-blue-600 rounded-lg shrink-0 mt-0.5">
+                      <Building2 className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <span className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider">Region Branch</span>
+                      <p className="text-xs font-bold text-slate-800">{selectedOrderDetails.branch_name || 'RAWAMANGUN'}</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3">
+                    <div className="p-2 bg-slate-50 text-slate-600 rounded-lg shrink-0 mt-0.5">
+                      <Search className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <span className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider">Target Location</span>
+                      <p className="text-xs font-medium text-slate-700">{selectedOrderDetails.location || 'Vault Center'}</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Simulated Fleet Details to make it beautiful */}
+                <div className="space-y-3 pt-2 border-t border-slate-100">
+                  <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">Armored Fleet & Security</h4>
+                  
+                  <div className="grid grid-cols-2 gap-3 bg-slate-50 border border-slate-100 rounded-xl p-3.5 text-xs text-slate-600">
+                    <div>
+                      <span className="text-[9px] text-slate-400 uppercase font-bold block tracking-wider mb-0.5">Assigned Guard</span>
+                      <p className="font-semibold text-slate-800">Sertu Bambang (Kopassus)</p>
+                    </div>
+                    <div>
+                      <span className="text-[9px] text-slate-400 uppercase font-bold block tracking-wider mb-0.5">Driver / Courier</span>
+                      <p className="font-semibold text-slate-800">Heru / Joko</p>
+                    </div>
+                    <div className="mt-2">
+                      <span className="text-[9px] text-slate-400 uppercase font-bold block tracking-wider mb-0.5">Armored Vehicle</span>
+                      <p className="font-mono font-bold text-slate-800 text-[11px]">B-1941-SCA (A-6)</p>
+                    </div>
+                    <div className="mt-2">
+                      <span className="text-[9px] text-slate-400 uppercase font-bold block tracking-wider mb-0.5">Estimated Arrival</span>
+                      <p className="font-semibold text-slate-800">14:30 WIB (Today)</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Status Actions */}
+                <div className="space-y-3 pt-4 border-t border-slate-100">
+                  <span className="block text-xs font-bold text-slate-900 uppercase tracking-wider">Update Trip Dispatch Status</span>
+                  <p className="text-[10px] text-slate-400 leading-relaxed font-medium">Ubah status operasional pengiriman uang ini. Perubahan akan didistribusikan ke logistik ActiveATM secara real-time.</p>
+                  
+                  <div className="grid grid-cols-3 gap-2 pt-1 font-sans">
+                    <button
+                      onClick={() => handleUpdateStatus('Idle')}
+                      className={`px-3 py-2 border rounded-lg text-xs font-bold cursor-pointer transition-all ${
+                        selectedOrderDetails.status === 'Idle' || selectedOrderDetails.status === 'Pending'
+                          ? 'bg-slate-100 border-slate-300 text-slate-800 font-black'
+                          : 'bg-white hover:bg-slate-50 border-slate-200 text-slate-600'
+                      }`}
+                    >
+                      Set Idle
+                    </button>
+                    <button
+                      onClick={() => handleUpdateStatus('In Progress')}
+                      className={`px-3 py-2 border rounded-lg text-xs font-bold cursor-pointer transition-all ${
+                        selectedOrderDetails.status === 'In Progress'
+                          ? 'bg-blue-50 border-blue-300 text-blue-700 font-black shadow-sm shadow-blue-500/5'
+                          : 'bg-white hover:bg-blue-50 border-slate-200 text-blue-600'
+                      }`}
+                    >
+                      Start Trip
+                    </button>
+                    <button
+                      onClick={() => handleUpdateStatus('Completed')}
+                      className={`px-3 py-2 border rounded-lg text-xs font-bold cursor-pointer transition-all ${
+                        selectedOrderDetails.status === 'Completed'
+                          ? 'bg-emerald-50 border-emerald-300 text-emerald-700 font-black shadow-sm shadow-emerald-500/5'
+                          : 'bg-white hover:bg-emerald-50 border-slate-200 text-blue-600'
+                      }`}
+                    >
+                      Complete
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Floating Dark Mode Toast Notification */}
+      {localToast && (
+        <div className="fixed bottom-6 right-6 z-50 max-w-sm bg-slate-900 border border-slate-800 text-white rounded-xl shadow-xl p-4 flex items-start gap-3.5 animate-bounce-short">
+          <div className="p-2 bg-blue-600/20 text-blue-400 rounded-lg shrink-0">
+            <Coins className="h-5 w-5" />
+          </div>
+          <div className="flex-1 text-xs text-left">
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-slate-100">{localToast.title}</span>
+              <button 
+                onClick={() => setLocalToast(null)}
+                className="text-slate-500 hover:text-slate-300 text-xs font-bold leading-none ml-2"
+              >
+                &times;
+              </button>
+            </div>
+            <p className="text-slate-400 mt-1 font-medium leading-relaxed">{localToast.message}</p>
           </div>
         </div>
       )}
