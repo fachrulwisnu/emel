@@ -29,7 +29,8 @@ import {
   Activity,
   Check,
   Zap,
-  ChevronUp
+  ChevronUp,
+  Sparkles
 } from 'lucide-react';
 
 interface Email {
@@ -52,6 +53,14 @@ interface Email {
   // Frontend map fallbacks
   fromName?: string;
   fromAddress?: string;
+
+  // AI fields
+  is_read?: boolean;
+  tag_type?: string;
+  summary?: string;
+  action_required?: boolean;
+  suggested_tag?: string;
+  is_important?: boolean;
 }
 
 interface CustomFilter {
@@ -552,6 +561,30 @@ export default function App() {
     } finally {
       setIsSyncing(false);
       setTimeout(() => setSyncStatus(null), 8000);
+    }
+  };
+
+  // Handle email selection and mark as read reactively
+  const handleSelectEmail = async (email: Email) => {
+    setSelectedEmail(email);
+    if (!email.is_read) {
+      // Optimistically update local tickets state
+      setTickets(prev => prev.map(t => t.message_id === email.message_id ? { ...t, is_read: true } : t));
+      
+      // Update selected email state as well
+      setSelectedEmail({ ...email, is_read: true });
+
+      // Non-blocking api call
+      try {
+        await fetch('/api/emails/mark-read', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message_id: email.message_id, is_read: true })
+        });
+        await loadFolders(); // Refresh folders count since unread state counts might be updated
+      } catch (err) {
+        console.error('Failed to update read state on backend:', err);
+      }
     }
   };
 
@@ -1141,7 +1174,7 @@ export default function App() {
                     return (
                       <div
                         key={email.message_id}
-                        onClick={() => setSelectedEmail(email)}
+                        onClick={() => handleSelectEmail(email)}
                         className={`p-4 transition-all cursor-pointer border-l-4 text-left relative ${
                           isSelected 
                             ? 'bg-blue-50/70 border-blue-600' 
@@ -1149,7 +1182,10 @@ export default function App() {
                         }`}
                       >
                         <div className="flex items-center justify-between mb-1.5">
-                          <span className="font-bold text-slate-800 text-xs truncate max-w-[160px]">
+                          <span className="font-bold text-slate-800 text-xs truncate max-w-[160px] flex items-center gap-1.5">
+                            {!email.is_read && (
+                              <span className="w-1.5 h-1.5 rounded-full bg-blue-600 shrink-0 inline-block" title="Unread" />
+                            )}
                             {email.fromName}
                           </span>
                           <span className="text-[9px] text-slate-400 shrink-0 font-mono">
@@ -1175,6 +1211,18 @@ export default function App() {
                           <span className="text-[9px] font-bold px-1.5 py-0.5 rounded border" style={getTagBadgeStyle(email.folder_child || 'Uncategorized')}>
                             {email.folder_child || 'Uncategorized'}
                           </span>
+
+                          {email.tag_type && (
+                            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${
+                              email.tag_type === 'Penugasan' 
+                                ? 'bg-amber-50 text-amber-700 border-amber-200' 
+                                : email.tag_type === 'Peringatan'
+                                ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                : 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                            }`}>
+                              {email.tag_type}
+                            </span>
+                          )}
 
                           {email.api_workflow_status && email.api_workflow_status !== 'none' && (
                             <span className={`text-[8px] font-bold uppercase px-1.5 py-0.2 rounded-full border flex items-center gap-1 ${
@@ -1241,6 +1289,83 @@ export default function App() {
                   <div className="p-6 flex-1 select-text border-b border-slate-100">
                     <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-5 font-mono text-xs text-slate-700 whitespace-pre-wrap leading-relaxed min-h-[160px]">
                       {selectedEmail.body_text}
+                    </div>
+                  </div>
+
+                  {/* AI Operational Assistant Copilot Panel */}
+                  <div className="px-6 py-5 border-b border-slate-100 bg-blue-50/15" id="ai_operational_assistant_panel">
+                    <div className="flex items-center justify-between mb-3.5">
+                      <div className="flex items-center space-x-2">
+                        <Sparkles className="h-4.5 w-4.5 text-indigo-600 animate-pulse" />
+                        <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">AI Operational Assistant Copilot</h3>
+                      </div>
+                      
+                      {selectedEmail.tag_type ? (
+                        <span className={`text-[9px] font-bold uppercase px-2 py-0.5 rounded-full border ${
+                          selectedEmail.tag_type === 'Penugasan' 
+                            ? 'bg-amber-100 text-amber-800 border-amber-300 shadow-sm' 
+                            : selectedEmail.tag_type === 'Peringatan'
+                            ? 'bg-rose-100 text-rose-800 border-rose-300 shadow-sm'
+                            : 'bg-indigo-100 text-indigo-800 border-indigo-300 shadow-sm'
+                        }`}>
+                          Kategori: {selectedEmail.tag_type}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-slate-400 italic">Not analyzed by AI</span>
+                      )}
+                    </div>
+
+                    <div className="space-y-3">
+                      {/* Effective Summary */}
+                      <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm text-left">
+                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Effective Summary</p>
+                        <p className="text-xs text-slate-700 leading-relaxed font-medium">
+                          {selectedEmail.summary || 'Summary is not generated yet. Analysis will run on next sync/simulation.'}
+                        </p>
+                      </div>
+
+                      {/* Action Required & Urgent markings */}
+                      <div className="flex gap-3">
+                        <div className={`flex-1 p-3 rounded-lg border flex items-center gap-2.5 ${
+                          selectedEmail.action_required 
+                            ? 'bg-amber-50/75 border-amber-200 text-amber-900' 
+                            : 'bg-slate-50/70 border-slate-200 text-slate-500'
+                        }`}>
+                          <div className={`w-2 h-2 rounded-full ${selectedEmail.action_required ? 'bg-amber-500 animate-ping' : 'bg-slate-300'}`} />
+                          <div className="text-left">
+                            <span className="text-[10px] block font-bold uppercase text-slate-400">Action Required</span>
+                            <span className="text-[11px] font-semibold">{selectedEmail.action_required ? 'Yes (Tindakan Diperlukan)' : 'No (Hanya Informasi)'}</span>
+                          </div>
+                        </div>
+
+                        <div className={`flex-1 p-3 rounded-lg border flex items-center gap-2.5 ${
+                          selectedEmail.is_important 
+                            ? 'bg-rose-50/70 border-rose-200 text-rose-900' 
+                            : 'bg-slate-50/70 border-slate-200 text-slate-500'
+                        }`}>
+                          <div className={`w-2 h-2 rounded-full ${selectedEmail.is_important ? 'bg-rose-500 animate-ping' : 'bg-slate-300'}`} />
+                          <div className="text-left">
+                            <span className="text-[10px] block font-bold uppercase text-slate-400">Marking / Urgency</span>
+                            <span className="text-[11px] font-semibold">{selectedEmail.is_important ? 'Urgent / Task' : 'Routine'}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Output for UI (JSON Format Metadata) */}
+                      <div className="bg-slate-900 border border-slate-800 rounded-xl p-3.5 text-left">
+                        <div className="flex items-center justify-between mb-2">
+                          <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wider font-mono">Structured JSON Output</p>
+                          <span className="text-[8px] bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded font-mono">React UI Consumption Ready</span>
+                        </div>
+                        <pre className="text-[10px] text-emerald-400 font-mono overflow-x-auto whitespace-pre leading-relaxed select-all">
+                          {JSON.stringify({
+                            summary: selectedEmail.summary || '',
+                            action_required: !!selectedEmail.action_required,
+                            suggested_tag: selectedEmail.tag_type || selectedEmail.suggested_tag || 'Informasi',
+                            is_important: !!selectedEmail.is_important
+                          }, null, 2)}
+                        </pre>
+                      </div>
                     </div>
                   </div>
 

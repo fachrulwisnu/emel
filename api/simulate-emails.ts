@@ -1,5 +1,5 @@
 import { getAutoTags } from '../src/tags';
-import { upsertEmail } from '../src/sqlite-db';
+import { dbUpsertEmail } from '../src/database-service';
 
 export default async function handler(req: any, res: any) {
   try {
@@ -67,9 +67,9 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // Save to SQLite Database
+    // Save to Database
     for (const email of fetchedEmails) {
-      await upsertEmail({
+      await dbUpsertEmail({
         message_id: email.uid,
         subject: email.subject,
         sender: email.fromName ? `${email.fromName} <${email.fromAddress}>` : email.fromAddress,
@@ -77,7 +77,8 @@ export default async function handler(req: any, res: any) {
         date: email.date,
         body_text: email.body,
         html_body: email.bodyHtml,
-        tags: email.tags
+        tags: email.tags,
+        is_read: false
       });
     }
 

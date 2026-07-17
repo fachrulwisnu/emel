@@ -6,7 +6,8 @@ import {
   getAppSettings, 
   saveAppSettings, 
   dbGetAllEmails, 
-  dbClearEmails 
+  dbClearEmails,
+  dbMarkEmailAsRead
 } from "./src/database-service";
 import { 
   performBackgroundSync, 
@@ -103,6 +104,20 @@ async function startServer() {
   app.post("/api/clear-emails", async (req, res) => {
     try {
       await dbClearEmails();
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // Mark email as read or unread
+  app.post("/api/emails/mark-read", async (req, res) => {
+    try {
+      const { message_id, is_read } = req.body;
+      if (!message_id) {
+        return res.status(400).json({ success: false, message: "Missing message_id" });
+      }
+      await dbMarkEmailAsRead(message_id, is_read);
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message || String(err) });

@@ -2,6 +2,7 @@ import sqlite3 from 'sqlite3';
 import path from 'path';
 import fs from 'fs';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { GoogleGenAI, Type } from '@google/genai';
 import { classifyEmail, classifyFolder } from './sqlite-db';
 
 const SETTINGS_FILE_PATH = path.join(process.cwd(), 'app_settings.json');
@@ -23,6 +24,13 @@ export interface Email {
   folder_child?: string;
   api_workflow_status?: string;
   api_workflow_log?: string;
+  // AI and operational fields
+  is_read?: boolean;
+  tag_type?: string;
+  summary?: string;
+  action_required?: boolean;
+  suggested_tag?: string;
+  is_important?: boolean;
 }
 
 export interface CustomFilter {
@@ -156,6 +164,14 @@ export async function initDatabaseService(): Promise<void> {
       db.run('ALTER TABLE emails ADD COLUMN api_workflow_log TEXT', () => {});
       db.run('ALTER TABLE custom_filters ADD COLUMN trigger_api INTEGER DEFAULT 0', () => {});
 
+      // Operational & AI Assistant Columns
+      db.run('ALTER TABLE emails ADD COLUMN is_read INTEGER DEFAULT 0', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN tag_type TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN summary TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN action_required INTEGER DEFAULT 0', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN suggested_tag TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN is_important INTEGER DEFAULT 0', () => {});
+
       resolve();
     });
   });
@@ -187,7 +203,14 @@ export async function dbGetAllEmails(): Promise<Email[]> {
           folder_parent: row.folder_parent || '',
           folder_child: row.folder_child || '',
           api_workflow_status: row.api_workflow_status || 'none',
-          api_workflow_log: row.api_workflow_log || ''
+          api_workflow_log: row.api_workflow_log || '',
+          // AI and operational fields
+          is_read: row.is_read === true || row.is_read === 1,
+          tag_type: row.tag_type || '',
+          summary: row.summary || '',
+          action_required: row.action_required === true || row.action_required === 1,
+          suggested_tag: row.suggested_tag || '',
+          is_important: row.is_important === true || row.is_important === 1
         }));
       }
       console.warn('Supabase emails query failed, falling back to SQLite:', error);
@@ -225,7 +248,14 @@ export async function dbGetAllEmails(): Promise<Email[]> {
           folder_parent: row.folder_parent || '',
           folder_child: row.folder_child || '',
           api_workflow_status: row.api_workflow_status || 'none',
-          api_workflow_log: row.api_workflow_log || ''
+          api_workflow_log: row.api_workflow_log || '',
+          // AI and operational fields
+          is_read: row.is_read === 1,
+          tag_type: row.tag_type || '',
+          summary: row.summary || '',
+          action_required: row.action_required === 1,
+          suggested_tag: row.suggested_tag || '',
+          is_important: row.is_important === 1
         };
       });
       resolve(mapped);
@@ -233,7 +263,145 @@ export async function dbGetAllEmails(): Promise<Email[]> {
   });
 }
 
-// Upsert Email in SQLite and Supabase
+// AI Processing with @google/genai SDK
+export async function processEmailWithAI(subject: string, bodyText: string): Promise<{
+  summary: string;
+  action_required: boolean;
+  suggested_tag: string;
+  is_important: boolean;
+}> {
+  const apiKey = process.env.GEMINI_API_KEY;
+
+  if (!apiKey) {
+    console.warn('[AI Processing] GEMINI_API_KEY is not configured. Falling back to rule-based classification.');
+    return ruleBasedFallback(subject, bodyText);
+  }
+
+  try {
+    const ai = new GoogleGenAI({
+      apiKey: apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
+
+    const systemInstruction = `Anda adalah asisten operasional cerdas untuk memproses email masuk milik Fachrul.
+Setiap email harus dianalisis untuk menghasilkan:
+1. Ringkasan efektif (maksimal 2 kalimat) mengenai inti email tersebut. Jika ada instruksi atau penugasan, sebutkan secara spesifik siapa yang harus melakukan apa.
+2. Klasifikasi kategori (tag_type): harus salah satu dari 'Penugasan', 'Informasi', atau 'Peringatan'.
+3. Penentuan apakah ada tindakan yang diperlukan (action_required: true/false).
+4. Penentuan apakah email ini penting atau mendesak (is_important: true/false). Email yang mengandung instruksi mendesak, penugasan penting, atau peringatan kegagalan/error kritis harus dianggap penting.`;
+
+    const prompt = `Subject: ${subject}\n\nBody:\n${bodyText}`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: prompt,
+      config: {
+        systemInstruction,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            summary: {
+              type: Type.STRING,
+              description: "Ringkasan email maksimal 2 kalimat. Sebutkan instruksi spesifik jika ada."
+            },
+            action_required: {
+              type: Type.BOOLEAN,
+              description: "True jika ada tindakan/penugasan yang harus ditindaklanjuti."
+            },
+            suggested_tag: {
+              type: Type.STRING,
+              description: "Kategori email: 'Penugasan', 'Informasi', atau 'Peringatan'."
+            },
+            is_important: {
+              type: Type.BOOLEAN,
+              description: "True jika mendesak, mengandung penugasan, atau peringatan kritis."
+            }
+          },
+          required: ["summary", "action_required", "suggested_tag", "is_important"]
+        }
+      }
+    });
+
+    const text = response.text;
+    if (text) {
+      try {
+        const result = JSON.parse(text.trim());
+        // Validate suggested_tag
+        if (!['Penugasan', 'Informasi', 'Peringatan'].includes(result.suggested_tag)) {
+          result.suggested_tag = 'Informasi';
+        }
+        return result;
+      } catch (e) {
+        console.error('[AI Processing] Failed to parse JSON response from Gemini:', e, 'Response text:', text);
+      }
+    }
+  } catch (err) {
+    console.error('[AI Processing] Exception during Gemini API call:', err);
+  }
+
+  return ruleBasedFallback(subject, bodyText);
+}
+
+function ruleBasedFallback(subject: string, bodyText: string): {
+  summary: string;
+  action_required: boolean;
+  suggested_tag: string;
+  is_important: boolean;
+} {
+  const subjUpper = (subject || '').toUpperCase();
+  const bodyUpper = (bodyText || '').toUpperCase();
+
+  let suggested_tag = 'Informasi';
+  let action_required = false;
+  let is_important = false;
+
+  // Determine tag
+  if (
+    subjUpper.includes('TUGAS') || 
+    subjUpper.includes('ASSIGN') || 
+    subjUpper.includes('APPROVAL') || 
+    subjUpper.includes('MOHON') ||
+    bodyUpper.includes('TOLONG') ||
+    bodyUpper.includes('SILAKAN TINJAU')
+  ) {
+    suggested_tag = 'Penugasan';
+    action_required = true;
+    is_important = true;
+  } else if (
+    subjUpper.includes('WARNING') || 
+    subjUpper.includes('ERROR') || 
+    subjUpper.includes('PERINGATAN') || 
+    subjUpper.includes('FAIL') ||
+    subjUpper.includes('ALERT')
+  ) {
+    suggested_tag = 'Peringatan';
+    is_important = true;
+  }
+
+  // Generate a simple 1-2 sentence summary
+  let summary = `Email dari pengirim mengenai "${subject}".`;
+  if (suggested_tag === 'Penugasan') {
+    summary += ' Memerlukan tinjauan dan persetujuan atau pengerjaan tugas.';
+  } else if (suggested_tag === 'Peringatan') {
+    summary += ' Terdapat peringatan sistem atau status peringatan yang memerlukan perhatian.';
+  } else {
+    summary += ' Berisi penyampaian informasi operasional rutin.';
+  }
+
+  return {
+    summary,
+    action_required,
+    suggested_tag,
+    is_important
+  };
+}
+
+// Upsert Email in SQLite and Supabase with AI-driven tagging and summary analysis
 export async function dbUpsertEmail(email: Email): Promise<void> {
   // Classify dynamically if not provided
   let emailCategory = email.category;
@@ -274,6 +442,56 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
     if (!folderChild) folderChild = classification.folder_child;
   }
 
+  // Preserve existing operational fields if updating
+  let tagType = email.tag_type;
+  let summary = email.summary;
+  let actionRequired = email.action_required;
+  let suggestedTag = email.suggested_tag;
+  let isImportant = email.is_important;
+  let tags = email.tags || [];
+  let isRead = email.is_read !== undefined ? email.is_read : false;
+
+  const db = getSqliteDb();
+  const existing: any = await new Promise((resolve) => {
+    db.get('SELECT is_read, tag_type, summary, action_required, suggested_tag, is_important, tags FROM emails WHERE message_id = ?', [email.message_id], (err, row) => {
+      resolve(row || null);
+    });
+  });
+
+  if (existing) {
+    isRead = email.is_read !== undefined ? email.is_read : (existing.is_read === 1);
+    if (!tagType) tagType = existing.tag_type;
+    if (!summary) summary = existing.summary;
+    if (actionRequired === undefined) actionRequired = existing.action_required === 1;
+    if (!suggestedTag) suggestedTag = existing.suggested_tag;
+    if (isImportant === undefined) isImportant = existing.is_important === 1;
+    try {
+      if (tags.length === 0 && existing.tags) {
+        tags = JSON.parse(existing.tags);
+      }
+    } catch (e) {}
+  } else {
+    // New email: Run AI Assistant
+    try {
+      console.log(`[AI Copilot] Processing new email with Gemini: "${email.subject}"`);
+      const aiResult = await processEmailWithAI(email.subject, email.body_text);
+      summary = aiResult.summary;
+      actionRequired = aiResult.action_required;
+      suggestedTag = aiResult.suggested_tag;
+      tagType = aiResult.suggested_tag;
+      isImportant = aiResult.is_important;
+
+      // Tag backfilling: Jika mengandung instruksi mendesak atau penugasan, berikan label khusus 'Urgent/Task' pada tags
+      if (isImportant || suggestedTag === 'Penugasan') {
+        if (!tags.includes('Urgent/Task')) {
+          tags = [...tags.filter(t => t !== 'Other'), 'Urgent/Task'];
+        }
+      }
+    } catch (aiErr) {
+      console.error('[AI Copilot] Error analyzing new email:', aiErr);
+    }
+  }
+
   const normalizedEmail = {
     ...email,
     category: emailCategory,
@@ -285,12 +503,15 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
   };
 
   // Upsert to SQLite
-  const db = getSqliteDb();
   await new Promise<void>((resolve, reject) => {
     db.run(
       `
-      INSERT INTO emails (message_id, subject, sender, receiver, date, body_text, html_body, tags, category, sub_category, folder_parent, folder_child, api_workflow_status, api_workflow_log)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO emails (
+        message_id, subject, sender, receiver, date, body_text, html_body, tags, 
+        category, sub_category, folder_parent, folder_child, api_workflow_status, api_workflow_log,
+        is_read, tag_type, summary, action_required, suggested_tag, is_important
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(message_id) DO UPDATE SET
         subject = excluded.subject,
         sender = excluded.sender,
@@ -304,7 +525,13 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
         folder_parent = excluded.folder_parent,
         folder_child = excluded.folder_child,
         api_workflow_status = excluded.api_workflow_status,
-        api_workflow_log = excluded.api_workflow_log
+        api_workflow_log = excluded.api_workflow_log,
+        is_read = excluded.is_read,
+        tag_type = excluded.tag_type,
+        summary = excluded.summary,
+        action_required = excluded.action_required,
+        suggested_tag = excluded.suggested_tag,
+        is_important = excluded.is_important
       `,
       [
         normalizedEmail.message_id,
@@ -314,13 +541,19 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
         normalizedEmail.date,
         normalizedEmail.body_text,
         normalizedEmail.html_body,
-        JSON.stringify(normalizedEmail.tags),
+        JSON.stringify(tags),
         normalizedEmail.category,
         normalizedEmail.sub_category,
         normalizedEmail.folder_parent,
         normalizedEmail.folder_child,
         normalizedEmail.api_workflow_status,
-        normalizedEmail.api_workflow_log
+        normalizedEmail.api_workflow_log,
+        isRead ? 1 : 0,
+        tagType || null,
+        summary || null,
+        actionRequired ? 1 : 0,
+        suggestedTag || null,
+        isImportant ? 1 : 0
       ],
       (err) => {
         if (err) return reject(err);
@@ -351,23 +584,58 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
         date: dateIso,
         body_text: normalizedEmail.body_text !== undefined ? normalizedEmail.body_text : null,
         html_body: normalizedEmail.html_body !== undefined ? normalizedEmail.html_body : null,
-        tags: normalizedEmail.tags !== undefined ? normalizedEmail.tags : null,
+        tags: tags,
         category: normalizedEmail.category !== undefined ? normalizedEmail.category : null,
         sub_category: normalizedEmail.sub_category !== undefined ? normalizedEmail.sub_category : null,
         folder_parent: normalizedEmail.folder_parent !== undefined ? normalizedEmail.folder_parent : null,
         folder_child: normalizedEmail.folder_child !== undefined ? normalizedEmail.folder_child : null,
         api_workflow_status: normalizedEmail.api_workflow_status !== undefined ? normalizedEmail.api_workflow_status : null,
-        api_workflow_log: normalizedEmail.api_workflow_log !== undefined ? normalizedEmail.api_workflow_log : null
+        api_workflow_log: normalizedEmail.api_workflow_log !== undefined ? normalizedEmail.api_workflow_log : null,
+        // AI fields
+        is_read: isRead,
+        tag_type: tagType || null,
+        summary: summary || null,
+        action_required: actionRequired,
+        suggested_tag: suggestedTag || null,
+        is_important: isImportant
       };
 
       const { error } = await supabase.from('emails').upsert(payload, { onConflict: 'message_id' });
       if (error) {
-          console.error(`[Supabase Error] Failed to insert message ${message_id}:`, error.message, error.details);
-      } else {
-          // trigger real-time notification
+        console.error(`[Supabase Error] Failed to insert message ${message_id}:`, error.message, error.details);
       }
     } catch (err) {
       console.error('[Supabase Upsert Exception]:', err);
+    }
+  }
+}
+
+// Mark email as read or unread on SQLite and Supabase databases
+export async function dbMarkEmailAsRead(message_id: string, is_read: boolean): Promise<void> {
+  const isReadInt = is_read ? 1 : 0;
+  
+  // SQLite
+  const db = getSqliteDb();
+  await new Promise<void>((resolve, reject) => {
+    db.run('UPDATE emails SET is_read = ? WHERE message_id = ?', [isReadInt, message_id], (err) => {
+      if (err) return reject(err);
+      resolve();
+    });
+  });
+
+  // Supabase
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      const { error } = await supabase
+        .from('emails')
+        .update({ is_read: is_read })
+        .eq('message_id', message_id);
+      if (error) {
+        console.error('[Supabase Update is_read Error]:', error);
+      }
+    } catch (err) {
+      console.error('[Supabase Update is_read Exception]:', err);
     }
   }
 }
