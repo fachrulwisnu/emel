@@ -108,6 +108,12 @@ const stringToColor = (str: string) => {
   return color;
 };
 
+const getBadge = (tag: string | undefined) => {
+  if (tag === 'CIT') return <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded text-[9px] font-bold shadow-xs badge-cit">CIT 💰</span>;
+  if (tag === 'ATM') return <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded text-[9px] font-bold shadow-xs badge-atm">ATM 💳</span>;
+  return null;
+};
+
 const getTagBadgeStyle = (str: string) => {
   const color = stringToColor(str);
   return {
@@ -1448,6 +1454,7 @@ export default function App() {
 
                         {/* Folder tags */}
                         <div className="flex items-center gap-1.5 flex-wrap">
+                          {getBadge(email.suggested_tag)}
                           <span className="text-[9px] font-bold px-1.5 py-0.5 rounded border" style={getTagBadgeStyle(email.folder_parent || 'Lainnya')}>
                             {email.folder_parent || 'Lainnya'}
                           </span>
@@ -1617,34 +1624,93 @@ export default function App() {
                         </div>
                       </div>
 
-                      {/* Output for UI (JSON Format Metadata) */}
-                      <div className="bg-slate-900 border border-slate-800 rounded-xl p-3.5 text-left">
-                        <div className="flex items-center justify-between mb-2">
-                          <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wider font-mono">Structured JSON Output</p>
-                          <span className="text-[8px] bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded font-mono">React UI Consumption Ready</span>
+                      {/* AI Operational Summary & Classification Card (Replaces Raw JSON per instructions) */}
+                      <div className="bg-white border border-slate-200 rounded-xl p-4.5 shadow-sm text-left font-sans ai-result-card">
+                        <div className="flex items-center justify-between border-b border-slate-100 pb-2.5 mb-3.5">
+                          <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                            <Sparkles className="h-3.5 w-3.5 text-indigo-500" />
+                            <span>Ringkasan Operasional</span>
+                          </h4>
+                          <span className="text-[9px] bg-slate-100 text-slate-500 font-bold font-mono px-2 py-0.5 rounded-full uppercase">
+                            AI Analyzed
+                          </span>
                         </div>
-                        <pre className="text-[10px] text-emerald-400 font-mono overflow-x-auto whitespace-pre leading-relaxed select-all">
-                          {JSON.stringify({
-                            summary: selectedEmail.summary || '',
-                            action_required: !!selectedEmail.action_required,
-                            urgency_level: selectedEmail.urgency_level || 'Routine',
-                            suggested_tag: selectedEmail.tag_type || selectedEmail.suggested_tag || 'Informasi',
-                            suggested_folder_parent: selectedEmail.suggested_folder_parent || 'Operation',
-                            suggested_folder_child: selectedEmail.suggested_folder_child || 'General'
-                          }, null, 2)}
-                        </pre>
+
+                        <p className="text-xs text-slate-600 leading-relaxed font-medium mb-4">
+                          {selectedEmail.summary || 'Belum dianalisis. Silakan jalankan simulasi atau sinkronisasi.'}
+                        </p>
+
+                        <div className="grid grid-cols-2 gap-3.5 mb-4">
+                          <div className="bg-slate-50 border border-slate-200/60 rounded-lg p-2.5">
+                            <span className="text-[9px] font-bold text-slate-400 block uppercase mb-1">Klasifikasi Tag</span>
+                            <div className="flex items-center gap-1.5">
+                              {selectedEmail.suggested_tag === 'CIT' ? (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-md text-[11px] font-bold shadow-xs badge tag-cit">
+                                  <span>💰</span> CIT
+                                </span>
+                              ) : selectedEmail.suggested_tag === 'ATM' ? (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-md text-[11px] font-bold shadow-xs badge tag-atm">
+                                  <span>💳</span> ATM
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-slate-100 text-slate-600 border border-slate-200 rounded-md text-[11px] font-bold shadow-xs badge tag-lainnya">
+                                  <span>📁</span> {selectedEmail.suggested_tag || 'Lainnya'}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="bg-slate-50 border border-slate-200/60 rounded-lg p-2.5">
+                            <span className="text-[9px] font-bold text-slate-400 block uppercase mb-1">Tingkat Urgensi</span>
+                            <div className="flex items-center gap-1.5">
+                              {selectedEmail.urgency_level === 'High' ? (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-rose-50 text-rose-700 border border-rose-200 rounded-md text-[11px] font-bold shadow-xs badge urgency-high">
+                                  High / Mendesak
+                                </span>
+                              ) : selectedEmail.urgency_level === 'Medium' ? (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-md text-[11px] font-bold shadow-xs badge urgency-medium">
+                                  Medium / Sedang
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-slate-100 text-slate-600 border border-slate-200 rounded-md text-[11px] font-bold shadow-xs badge urgency-routine">
+                                  Routine / Normal
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {selectedEmail.is_cit_order && (
+                          <div className="bg-blue-50/40 border border-blue-100 rounded-lg p-3 text-xs mb-3 text-left">
+                            <div className="flex justify-between items-center mb-1.5">
+                              <span className="font-bold text-blue-800 text-[10px] uppercase">Deteksi Order Khusus</span>
+                              {selectedEmail.suggested_bank && (
+                                <span className="px-1.5 py-0.5 bg-blue-100 text-blue-800 text-[9px] font-bold rounded-sm border border-blue-200">
+                                  Bank: {selectedEmail.suggested_bank}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-slate-600 font-medium text-[11px] leading-relaxed">
+                              {selectedEmail.extracted_notes || 'Tidak ada catatan khusus.'}
+                            </p>
+                          </div>
+                        )}
+
+                        <div className="flex items-center justify-between text-[10px] text-slate-400 border-t border-slate-100 pt-2.5">
+                          <span>Saran Folder: <strong className="text-slate-700">{selectedEmail.suggested_folder_parent} &gt; {selectedEmail.suggested_folder_child}</strong></span>
+                        </div>
 
                         {/* Integration Action Buttons */}
-                        <div className="mt-3.5 pt-3.5 border-t border-slate-800/60 flex items-center justify-between gap-3 font-sans">
+                        <div className="mt-3.5 pt-3.5 border-t border-slate-100 flex items-center justify-between gap-3 font-sans">
                           <button
                             type="button"
                             onClick={async () => {
                               const payload = {
                                 folder_parent: selectedEmail.suggested_folder_parent || selectedEmail.folder_parent || 'Operation',
                                 folder_child: selectedEmail.suggested_folder_child || selectedEmail.folder_child || 'General',
-                                tags: [selectedEmail.tag_type || selectedEmail.suggested_tag || 'Informasi'],
-                                suggested_tag: selectedEmail.tag_type || selectedEmail.suggested_tag || 'Informasi',
-                                is_important: !!selectedEmail.is_important,
+                                tags: [selectedEmail.tag_type || selectedEmail.suggested_tag || 'Lainnya'],
+                                suggested_tag: selectedEmail.tag_type || selectedEmail.suggested_tag || 'Lainnya',
+                                is_important: selectedEmail.urgency_level === 'High' || !!selectedEmail.is_important,
                                 urgency_level: selectedEmail.urgency_level || 'Routine',
                                 summary: selectedEmail.summary || '',
                                 action_required: !!selectedEmail.action_required,
@@ -1652,7 +1718,7 @@ export default function App() {
                               };
                               await handleSmartApply(selectedEmail.message_id, payload);
                             }}
-                            className="flex-1 py-2 px-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold rounded-lg text-center cursor-pointer flex items-center justify-center gap-1.5 shadow-sm transition-all"
+                            className="flex-1 py-2 px-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold rounded-lg text-center cursor-pointer flex items-center justify-center gap-1.5 shadow-sm transition-all text-xs"
                           >
                             <Sparkles className="h-3.5 w-3.5" />
                             <span>Smart Apply</span>
@@ -1665,7 +1731,7 @@ export default function App() {
                                 message_id: selectedEmail.message_id,
                                 folder_parent: selectedEmail.suggested_folder_parent || selectedEmail.folder_parent || 'Operation',
                                 folder_child: selectedEmail.suggested_folder_child || selectedEmail.folder_child || 'General',
-                                suggested_tag: selectedEmail.tag_type || selectedEmail.suggested_tag || 'Informasi',
+                                suggested_tag: selectedEmail.tag_type || selectedEmail.suggested_tag || 'Lainnya',
                                 urgency_level: selectedEmail.urgency_level || 'Routine',
                                 is_important: !!selectedEmail.is_important,
                                 summary: selectedEmail.summary || '',
@@ -1679,9 +1745,10 @@ export default function App() {
                               });
                               setIsEditSuggestionOpen(true);
                             }}
-                            className="py-2 px-3.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 hover:border-slate-600 font-bold rounded-lg text-center cursor-pointer transition-all"
+                            className="py-2 px-3.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold border border-slate-200 rounded-lg text-center cursor-pointer transition-all text-xs flex items-center gap-1.5"
                           >
-                            Edit Suggestion
+                            <Pencil className="h-3 w-3" />
+                            <span>Edit Suggestion</span>
                           </button>
                         </div>
                       </div>

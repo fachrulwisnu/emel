@@ -449,48 +449,44 @@ export async function processEmailWithNvidia(emailSubject: string, emailBody: st
   const messages = [
     {
       role: "system",
-      content: `Anda adalah AI Asisten Operasional Ticketing. Tugas utama Anda adalah menganalisis email masuk, memberikan ringkasan, mendeteksi pesanan operasional (CIT/ATM), dan merutekan email tersebut ke Folder Region dan Branch yang tepat.
+      content: `Anda adalah AI Asisten Operasional. Tugas Anda adalah menganalisis konten email, meringkasnya, dan memberikan klasifikasi terstruktur.
 
-INSTRUKSI ANALISIS DASAR:
-1. Analisis 'subject' and 'body_text' secara mendalam.
-2. Tentukan 'summary' (ringkasan 1-2 kalimat bahasa Indonesia).
-3. Tentukan 'action_required' (true jika email mengandung instruksi/tugas, false jika hanya notifikasi/rutin).
-4. Tentukan 'urgency_level' ("High", "Medium", "Low", atau "Routine").
+INSTRUKSI ANALISIS:
+1. Baca seluruh konten email, termasuk lampiran teks jika ada.
+2. Klasifikasikan email:
+   - Apakah ini terkait "CIT" (Cash In Transit)?
+   - Apakah ini terkait "ATM"?
+   - Jika ya, set 'suggested_tag' ke 'CIT' atau 'ATM'. Jika tidak, gunakan 'Lainnya'.
+3. Berikan 'urgency_level' (Routine, Medium, High).
+4. Berikan ringkasan singkat (maksimal 2 kalimat).
 
-INSTRUKSI DETEKSI CIT/ATM:
-Jika email berhubungan dengan uang (seperti: "CIT", "ATM", "Setor", "Bon", "Delivery", "Geser Vault", "Droping", "Uang Kertas", "Denom"):
-- Set "is_cit_order": true
-- Set "cit_type": "CIT" atau "ATM" (pilih yang paling relevan dengan isi email).
-- Set "suggested_tag": "CIT Order" atau "ATM Order".
+INSTRUKSI ROUTING & CIT DETAILS:
+- Jika terkait "CIT" atau "ATM", tentukan "is_cit_order" (true/false) dan "cit_type" ("CIT" / "ATM" / "None") sesuai dengan pilihan tersebut.
 - Ekstrak nama bank tujuan jika disebutkan ke dalam "suggested_bank" (contoh: "BCA", "CIMB NIAGA", "MAYBANK"). Kosongkan jika tidak ada.
-- Buat ringkasan instruksi khusus untuk operator ke dalam "extracted_notes" (misal: "Droping uang 100k dan 50k untuk KC Asia Afrika").
-- Jika tidak terdeteksi, set "is_cit_order": false, "cit_type": "None", "suggested_bank": "", "extracted_notes": "", dan berikan "suggested_tag" yang umum.
-
-INSTRUKSI ROUTING (SUGGESTED FOLDER):
-Tentukan 'suggested_folder_parent' (REGION) dan 'suggested_folder_child' (BRANCH) berdasarkan domain/alamat pengirim (sender) atau kata kunci di subject/body. Petakan sesuai aturan berikut:
-
-- REGION 1 -> PALEMBANG, MEDAN, BATAM, RAWAMANGUN, JAMBI, PADANG, PEKANBARU
-- REGION 2 -> PONTIANAK, BALIKPAPAN, SAMARINDA, BANJARMASIN, SINGKAWANG
-- REGION 3 -> MERUYA, BENGKULU, LAMPUNG, SERANG
-- REGION 4 -> DENPASAR, KUPANG, BANDUNG, MATARAM, MANADO, CIREBON
-- REGION 5 -> SEMARANG, SOLO, TEGAL, YOGYAKARTA, PURWOKERTO, KUDUS
-- REGION 6 -> MAKASSAR, KEDIRI, JEMBER, SURABAYA, MALANG
-- REGION 10 -> BENGKULU (Jika subject mengandung "ADV Bengkulu")
+- Buat ringkasan instruksi khusus untuk operator ke dalam "extracted_notes".
+- Tentukan 'suggested_folder_parent' (REGION) dan 'suggested_folder_child' (BRANCH) berdasarkan domain/alamat pengirim (sender) atau kata kunci di subject/body. Petakan sesuai aturan berikut:
+  - REGION 1 -> PALEMBANG, MEDAN, BATAM, RAWAMANGUN, JAMBI, PADANG, PEKANBARU
+  - REGION 2 -> PONTIANAK, BALIKPAPAN, SAMARINDA, BANJARMASIN, SINGKAWANG
+  - REGION 3 -> MERUYA, BENGKULU, LAMPUNG, SERANG
+  - REGION 4 -> DENPASAR, KUPANG, BANDUNG, MATARAM, MANADO, CIREBON
+  - REGION 5 -> SEMARANG, SOLO, TEGAL, YOGYAKARTA, PURWOKERTO, KUDUS
+  - REGION 6 -> MAKASSAR, KEDIRI, JEMBER, SURABAYA, MALANG
+  - REGION 10 -> BENGKULU (Jika subject mengandung "ADV Bengkulu")
 
 *PENTING: FORMAT OUTPUT HARUS JSON MURNI TANPA MARKDOWN DAN TANPA TEKS PEMBUKA.*
 
-CONTOH OUTPUT YANG DIHARAPKAN:
+FORMAT OUTPUT (JSON):
 {
-  "summary": "Permintaan bon CIT dan Setor Uang ATM Reguler SLA Medan tanggal 20 Juli 2026.",
-  "action_required": true,
-  "urgency_level": "High",
-  "suggested_tag": "CIT Order",
-  "is_cit_order": true,
-  "cit_type": "CIT",
-  "suggested_folder_parent": "REGION 1",
-  "suggested_folder_child": "MEDAN",
-  "suggested_bank": "BCA",
-  "extracted_notes": "Revisi setor ACMD & AVBT Reguler SLA Medan"
+  "summary": "Ringkasan email di sini.",
+  "action_required": true/false,
+  "urgency_level": "Routine/Medium/High",
+  "suggested_tag": "CIT/ATM/Lainnya",
+  "suggested_folder_parent": "REGION X",
+  "suggested_folder_child": "BRANCH_NAME",
+  "is_cit_order": true/false,
+  "cit_type": "CIT/ATM/None",
+  "suggested_bank": "...",
+  "extracted_notes": "..."
 }`
     },
     {
@@ -511,15 +507,32 @@ CONTOH OUTPUT YANG DIHARAPKAN:
       cleanJson = cleanJson.replace(/^```json\s*/i, "").replace(/```$/, "").trim();
     }
     const parsed = JSON.parse(cleanJson);
+    
+    // Ensure suggested_tag is CIT/ATM/Lainnya per instructions
+    let suggestedTag = parsed.suggested_tag !== undefined ? String(parsed.suggested_tag) : "Lainnya";
+    if (suggestedTag !== "CIT" && suggestedTag !== "ATM" && suggestedTag !== "Lainnya") {
+      if (suggestedTag.toUpperCase().includes("CIT")) {
+        suggestedTag = "CIT";
+      } else if (suggestedTag.toUpperCase().includes("ATM")) {
+        suggestedTag = "ATM";
+      } else {
+        suggestedTag = "Lainnya";
+      }
+    }
+
+    // Ensure is_cit_order and cit_type correspond perfectly
+    const isCit = (suggestedTag === "CIT" || suggestedTag === "ATM" || parsed.is_cit_order === true || parsed.is_cit_order === "true");
+    const citType = isCit ? (suggestedTag === "ATM" ? "ATM" : "CIT") : "None";
+
     return {
       summary: parsed.summary !== undefined ? String(parsed.summary) : "",
       action_required: parsed.action_required === true || parsed.action_required === "true",
       urgency_level: parsed.urgency_level !== undefined ? String(parsed.urgency_level) : "Routine",
-      suggested_tag: parsed.suggested_tag !== undefined ? String(parsed.suggested_tag) : "Informasi",
+      suggested_tag: suggestedTag,
       suggested_folder_parent: parsed.suggested_folder_parent !== undefined ? String(parsed.suggested_folder_parent) : "Operation",
       suggested_folder_child: parsed.suggested_folder_child !== undefined ? String(parsed.suggested_folder_child) : "General",
-      is_cit_order: parsed.is_cit_order === true || parsed.is_cit_order === "true",
-      cit_type: parsed.cit_type !== undefined ? String(parsed.cit_type) : "None",
+      is_cit_order: isCit,
+      cit_type: citType,
       suggested_bank: parsed.suggested_bank !== undefined ? String(parsed.suggested_bank) : "",
       extracted_notes: parsed.extracted_notes !== undefined ? String(parsed.extracted_notes) : ""
     };
